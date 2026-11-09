@@ -96,7 +96,7 @@ typedef struct istr { char *s; size_t len; unsigned hash; struct istr *next; } i
 
 /* --------------------------------------------------------------- tables */
 
-typedef struct wb_lv_kv { wb_lv_value k, v; int used; } wb_lv_kv;
+typedef struct wb_lv_kv { wb_lv_value k, v; int used; int tomb; } wb_lv_kv;
 struct wb_lv_table {
     wb_lv_kv *e; size_t cap, count;
     struct wb_lv_table *meta;

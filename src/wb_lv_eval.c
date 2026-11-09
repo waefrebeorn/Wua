@@ -527,7 +527,6 @@ wb_lv_value wb_lv_eval_multi(wb_lv *L, ex *e, env *en, wb_lv_value **out, int *n
                     wb_lv_eval_multi(L, e->list[i], en, &o2, &n2);
                     if (L->has_err) { free(args); return wb_lv_nil(); }
                     for (int k = 0; k < n2; k++) args = args_push(args, &na, &acap, o2[k]);
-                    if (n2 == 0) args = args_push(args, &na, &acap, wb_lv_nil());
                 } else {
                     wb_lv_value v = eval(L, e->list[i], en);
                     if (L->has_err) { free(args); return wb_lv_nil(); }
@@ -544,7 +543,6 @@ wb_lv_value wb_lv_eval_multi(wb_lv *L, ex *e, env *en, wb_lv_value **out, int *n
                     wb_lv_eval_multi(L, e->list[i], en, &o2, &n2);
                     if (L->has_err) { free(args); return wb_lv_nil(); }
                     for (int k = 0; k < n2; k++) args = args_push(args, &na, &acap, o2[k]);
-                    if (n2 == 0) args = args_push(args, &na, &acap, wb_lv_nil());
                 } else {
                     wb_lv_value v = eval(L, e->list[i], en);
                     if (L->has_err) { free(args); return wb_lv_nil(); }
@@ -1038,7 +1036,6 @@ wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
         wb_lv_value *out = NULL; int no = 0;
         wb_lv_eval_multi(L, vals[n - 1], en, &out, &no);
         for (int i = 0; i < no; i++) stk_push(L, out[i]);
-        if (no == 0) stk_push(L, wb_lv_nil());
         *was_return = 1;
         L->curline = save;
         return wb_lv_nil();

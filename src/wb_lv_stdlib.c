@@ -372,6 +372,26 @@ static wb_lv_value m_trig1(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     if (n < 1) return wb_lv_nil();
     return wb_lv_number(((double (*)(double))ud)(wb_lv_tonumber(a[0], NULL)));
 }
+static wb_lv_value m_deg(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    if (n < 1) return wb_lv_nil();
+    return wb_lv_number(wb_lv_tonumber(a[0], NULL) * (180.0 / 3.14159265358979323846));
+}
+static wb_lv_value m_rad(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    if (n < 1) return wb_lv_nil();
+    return wb_lv_number(wb_lv_tonumber(a[0], NULL) * (3.14159265358979323846 / 180.0));
+}
+static wb_lv_value m_exp(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    if (n < 1) return wb_lv_nil();
+    return wb_lv_number(exp(wb_lv_tonumber(a[0], NULL)));
+}
+static wb_lv_value m_log10(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    if (n < 1) return wb_lv_nil();
+    return wb_lv_number(log10(wb_lv_tonumber(a[0], NULL)));
+}
 static wb_lv_value m_pow(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     (void)L; (void)ud;
     if (n < 2) return wb_lv_nil();
@@ -397,7 +417,27 @@ void wb_lv_register_math(wb_lv *L) {
     M("tointeger", m_tointeger); M("type", m_type); M("ult", m_ult);
     M("random", m_random); M("randomseed", m_randomseed);
     M("pow", m_pow); M("log", m_log);
+    M("sin", m_trig1); M("cos", m_trig1); M("tan", m_trig1);
+    M("asin", m_trig1); M("acos", m_trig1); M("atan", m_trig1);
+    M("sinh", m_trig1); M("cosh", m_trig1); M("tanh", m_trig1);
+    M("deg", m_deg); M("rad", m_rad); M("exp", m_exp); M("log10", m_log10);
 #undef M
+    /* trig handlers dispatch the libc function through ud */
+#define TU(name, libfn) { wb_lv_value v; v.t = WB_LV_CFUNCTION; v.as.cf.f = m_trig1; v.as.cf.ud = (void *)(libfn); \
+    wb_lv_table_set(L, t, wb_lv_str(name), v); }
+    TU("sin", sin); TU("cos", cos); TU("tan", tan);
+    TU("asin", asin); TU("acos", acos); TU("atan", atan);
+    TU("sinh", sinh); TU("cosh", cosh); TU("tanh", tanh);
+#undef TU
+    /* constants: pi, huge, maxinteger, mininteger, inf */
+    { wb_lv_value v; v.t = WB_LV_NUM; v.as.n = 3.14159265358979323846;
+      wb_lv_table_set(L, t, wb_lv_str("pi"), v); }
+    { wb_lv_value v; v.t = WB_LV_NUM; v.as.n = HUGE_VAL;
+      wb_lv_table_set(L, t, wb_lv_str("huge"), v); }
+    { wb_lv_value v; v.t = WB_LV_INT; v.as.i = INT64_MAX;
+      wb_lv_table_set(L, t, wb_lv_str("maxinteger"), v);
+      v.as.i = INT64_MIN;
+      wb_lv_table_set(L, t, wb_lv_str("mininteger"), v); }
 #define T(name, fn) { wb_lv_value v; v.t = WB_LV_CFUNCTION; v.as.cf.f = m_trig1; v.as.cf.ud = (void *)(fn); \
     wb_lv_table_set(L, t, wb_lv_str(name), v); }
     T("sin", sin); T("cos", cos); T("tan", tan);

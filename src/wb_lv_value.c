@@ -181,7 +181,7 @@ static void tgrow(wb_lv *L, wb_lv_table *t) {
     size_t nc = t->cap ? t->cap * 2 : 16;
     wb_lv_kv *ne = (wb_lv_kv *)wb_lv_arena_alloc(L, nc * sizeof(*ne));
     if (t->e) for (size_t i = 0; i < t->cap; i++)
-        if (t->e[i].used) {
+        if (t->e[i].used && !t->e[i].tomb) {      /* tombstones are dropped */
             unsigned hi = valhash(t->e[i].k) % nc, j = hi;
             while (ne[j].used) j = (j + 1) % nc;
             ne[j] = t->e[i];
@@ -193,7 +193,7 @@ static wb_lv_kv *tfind(wb_lv_table *t, wb_lv_value k) {
     if (!t->cap) return NULL;
     unsigned hi = valhash(k) % t->cap, j = hi;
     while (t->e[j].used) {
-        if (keyeq(t->e[j].k, k)) return &t->e[j];
+        if (!t->e[j].tomb && keyeq(t->e[j].k, k)) return &t->e[j];
         j = (j + 1) % t->cap;
     }
     return NULL;
@@ -209,10 +209,19 @@ void wb_lv_table_set(wb_lv *L, wb_lv_table *t, wb_lv_value k, wb_lv_value v) {
     if (k.t == WB_LV_NUM && isnan(k.as.n)) { wb_lv_error(L, "table index is NaN (line %d)", L->curline); return; }
     if (t->count * 2 >= t->cap) tgrow(L, t);
     wb_lv_kv *f = tfind(t, k);
-    if (f) { f->v = v; t->seq_dirty = 1; return; }
+    if (f) {
+        if (v.t == WB_LV_NIL) {                /* assigning nil deletes the key */
+            f->used = 1; f->tomb = 1; f->k = wb_lv_nil(); f->v = wb_lv_nil(); t->count--;
+        } else {
+            f->v = v;
+        }
+        t->seq_dirty = 1;
+        return;
+    }
+    if (v.t == WB_LV_NIL) return;              /* nil on an absent key is a no-op */
     unsigned hi = valhash(k) % t->cap, j = hi;
     while (t->e[j].used) j = (j + 1) % t->cap;
-    t->e[j].k = k; t->e[j].v = v; t->e[j].used = 1; t->count++;
+    t->e[j].k = k; t->e[j].v = v; t->e[j].used = 1; t->e[j].tomb = 0; t->count++;
     t->seq_dirty = 1;
 }
 
@@ -252,7 +261,7 @@ int wb_lv_table_next(wb_lv_table *t, wb_lv_value *k, wb_lv_value *v) {
         slot = (size_t)(f - t->e) + 1;
     } else slot = 0;
     for (size_t i = slot; i < t->cap; i++) {
-        if (t->e[i].used) { if (k) *k = t->e[i].k; if (v) *v = t->e[i].v; return 1; }
+        if (t->e[i].used && !t->e[i].tomb) { if (k) *k = t->e[i].k; if (v) *v = t->e[i].v; return 1; }
     }
     return 0;
 }
