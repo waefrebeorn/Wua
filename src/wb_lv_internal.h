@@ -150,6 +150,12 @@ typedef struct {
     tok cur;
     wb_lv *L; pool *pl; int err;
     int depth;
+    int loop_depth;                /* enclosing loop count (break validity)  */
+    /* parse-time label/goto validation (Lua requires break/goto targets to
+     * exist at compile time; scoped per function via nfunc nesting) */
+    const char **label; int *ldep; int nlabel, clabel;   /* ::name:: declared */
+    const char **gotol; int *gdep; int *gres;  int ngoto, cgoto; /* goto name */
+    int nfunc;                                   /* function-body nesting     */
 } parser;
 
 void wb_lv_set_err(wb_lv *L, const char *fmt, ...);

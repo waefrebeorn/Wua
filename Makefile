@@ -20,7 +20,9 @@
 CC      = gcc
 # -MMD -MP emits per-object dependency files so a header edit rebuilds every
 # dependent source (adopted from WuBuNOS, which commits its own .d tracking).
-CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -MMD -MP -Isrc
+# -ffp-contract=off keeps a*b+c unrecontracted so results are bit-identical
+# across compiler builds (see docs/math.md float-determinism note).
+CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -MMD -MP -ffp-contract=off -Isrc
 LDLIBS  ?= -lm
 
 LV_SRC  := $(wildcard src/wb_lv_*.c)

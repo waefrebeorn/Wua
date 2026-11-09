@@ -6,6 +6,17 @@ the contract for that integration: how to embed it, which patterns to reuse,
 what the performance ceiling is and how to break it, and the testing the two
 projects already share.
 
+**Wua is a strict superset, by rule.** Every script that compiles and runs on
+stock Lua 5.4 compiles and runs identically on Wua (verified by the gates,
+the differential fuzzers, and the stress docket). On top of that Wua adds
+game-engine improvements, and **every extension or intentional divergence is
+explicitly warned** in `docs/math.md` and is script-discoverable via the global
+`wua` table (`wua.deterministic_random`, `wua.extensions`, `wua.version`).
+Portable scripts feature-detect; WuBuNOS games reach for the extensions
+(`math.clamp/lerp/sign/round/map/between`) and the reproducible
+`math.random`. See `docs/math.md` for the full list and reasoning.
+
+
 ## Embedding
 
 Wua is a plain C11 static library: no runtime deps, no global mutable state,

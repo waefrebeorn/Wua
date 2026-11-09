@@ -615,4 +615,29 @@ void wb_lv_openlibs(wb_lv *L) {
     wb_lv_register_debug(L);
     wb_lv_register_utf8(L);
     wb_lv_register_coro(L);
+    /* `wua` -- Wua feature table. A script can feature-detect every way Wua is
+     * more than plain Lua (the "a wua is our improvements" contract). Every
+     * key is an intentional divergence or an additive extension; scripts that
+     * must stay portable to stock Lua 5.4 should test these before relying on
+     * them. See docs/math.md for the full wording. */
+    {
+        wb_lv_table *t = wb_lv_table_new(L, 0, 8);
+        wb_lv_table_set(L, t, wb_lv_str("version"), wb_lv_str("wua-1.0"));
+        wb_lv_table_set(L, t, wb_lv_str("lua_standard"), wb_lv_str("5.4"));
+        /* intentional divergence: math.random is reproducible across platforms
+         * (splitmix64), unlike stock Lua's libc rand() */
+        wb_lv_table_set(L, t, wb_lv_str("deterministic_random"), wb_lv_bool(1));
+        /* additive math extensions not present in Lua 5.4 */
+        static const char *ex[] = { "math.clamp", "math.lerp", "math.sign",
+                                    "math.round", "math.map", "math.between",
+                                    NULL };
+        wb_lv_table *el = wb_lv_table_new(L, 6, 0);
+        int k = 1;
+        for (const char **p = ex; *p; p++, k++)
+            wb_lv_table_set(L, el, wb_lv_integer(k), wb_lv_str(*p));
+        wb_lv_value ev; ev.t = WB_LV_TABLE; ev.as.tab = el;
+        wb_lv_table_set(L, t, wb_lv_str("extensions"), ev);
+        wb_lv_value tv; tv.t = WB_LV_TABLE; tv.as.tab = t;
+        wb_lv_set_global(L, "wua", tv);
+    }
 }

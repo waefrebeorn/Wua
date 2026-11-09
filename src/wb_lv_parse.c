@@ -27,6 +27,62 @@ static ex *parse_simple(parser *P);
 static ex *parse_prefix(parser *P);
 static ex *parse_funcbody(parser *P, const char *name, int is_method);
 
+/* ---- parse-time control-flow validation ---------------------------------
+ * Lua 5.4 rejects `break` outside a loop and `goto` with no visible label at
+ * COMPILE time. A label is visible to a goto declared in the same block or any
+ * enclosing block (forward labels resolve when the scope closes). Scopes are
+ * function-local (labels do not cross functions). */
+
+static void p_label(parser *P, const char *name) {
+    if (P->nlabel >= P->clabel) {
+        int nc = P->clabel ? P->clabel * 2 : 8;
+        P->label = (const char **)realloc(P->label, (size_t)nc * sizeof(char *));
+        P->ldep  = (int *)realloc(P->ldep,   (size_t)nc * sizeof(int));
+        P->clabel = nc;
+    }
+    P->label[P->nlabel] = name; P->ldep[P->nlabel] = P->depth; P->nlabel++;
+}
+
+static void p_goto(parser *P, const char *name) {
+    if (P->ngoto >= P->cgoto) {
+        int nc = P->cgoto ? P->cgoto * 2 : 8;
+        P->gotol = (const char **)realloc(P->gotol, (size_t)nc * sizeof(char *));
+        P->gdep  = (int *)realloc(P->gdep,   (size_t)nc * sizeof(int));
+        P->gres  = (int *)realloc(P->gres,   (size_t)nc * sizeof(int));
+        P->cgoto = nc;
+    }
+    P->gotol[P->ngoto] = name; P->gdep[P->ngoto] = P->depth; P->gres[P->ngoto] = 0;
+    for (int i = 0; i < P->nlabel; i++)       /* backward: enclosing/current */
+        if (P->ldep[i] <= P->depth && strcmp(P->label[i], name) == 0) {
+            P->gres[P->ngoto] = 1; break;
+        }
+    P->ngoto++;
+}
+
+static void p_validate_gotos(parser *P) {     /* resolve forward labels, err */
+    for (int i = 0; i < P->ngoto; i++) {
+        if (P->gres[i]) continue;
+        for (int j = 0; j < P->nlabel; j++)
+            if (P->ldep[j] <= P->gdep[i] && strcmp(P->label[j], P->gotol[i]) == 0) {
+                P->gres[i] = 1; break;
+            }
+        if (!P->gres[i]) {
+            char msg[200];
+            snprintf(msg, sizeof msg, "no visible label '%s' for <goto>", P->gotol[i]);
+            wb_lv_perr(P, msg);
+        }
+    }
+    P->nlabel = P->ngoto = 0;
+}
+
+/* A loop body block: `break` is legal while we are inside it. */
+static ex *parse_loop_body(parser *P, int untilmask, int *matched) {
+    P->loop_depth++;
+    ex *b = parse_block(P, matched);
+    P->loop_depth--;
+    return b;
+}
+
 #define U_END    1
 #define U_ELSE   2
 #define U_ELSEIF 4
@@ -207,9 +263,19 @@ static ex *parse_funcbody(parser *P, const char *name, int is_method) {
     }
     expect(P, ')', "')' expected");
     f->names = params; f->nlist = np;
+    /* labels/gotos are function-local: save the enclosing scope, give this
+     * function a fresh one, and validate+free it when the body closes */
+    const char **sL = P->label; int *sD = P->ldep; int sN = P->nlabel, sC = P->clabel;
+    const char **sG = P->gotol; int *sGD = P->gdep; int *sGR = P->gres; int sGN = P->ngoto, sGC = P->cgoto;
+    P->label = NULL; P->ldep = NULL; P->nlabel = P->clabel = 0;
+    P->gotol = NULL; P->gdep = NULL; P->gres = NULL; P->ngoto = P->cgoto = 0;
     int m = 0;
     f->e1 = parse_block(P, &m);
     if (!(m & U_END)) wb_lv_perr(P, "'end' expected");
+    p_validate_gotos(P);
+    free(P->label); free(P->ldep); free(P->gotol); free(P->gdep); free(P->gres);
+    P->label = sL; P->ldep = sD; P->nlabel = sN; P->clabel = sC;
+    P->gotol = sG; P->gdep = sGD; P->gres = sGR; P->ngoto = sGN; P->cgoto = sGC;
     return f;
 }
 
@@ -347,6 +413,7 @@ static ex *parse_stmt(parser *P) {
 
     case T_BREAK:
         wb_lv_next_tok(P);
+        if (P->loop_depth == 0) wb_lv_perr(P, "break outside loop");
         s->t = N_BREAK;
         return s;
 
@@ -354,6 +421,7 @@ static ex *parse_stmt(parser *P) {
         wb_lv_next_tok(P);
         if (!tok_is(P, T_NAME)) { wb_lv_perr(P, "label name expected"); return s; }
         s->t = N_GOTO; s->label = P->cur.str;
+        p_goto(P, s->label);
         wb_lv_next_tok(P);
         return s;
 
@@ -361,6 +429,7 @@ static ex *parse_stmt(parser *P) {
         wb_lv_next_tok(P);
         if (!tok_is(P, T_NAME)) { wb_lv_perr(P, "label name expected"); return s; }
         s->t = N_LABEL; s->label = P->cur.str;
+        p_label(P, s->label);
         wb_lv_next_tok(P);
         expect(P, T_DBCOLON, "'::' expected");
         return s;
@@ -377,13 +446,13 @@ static ex *parse_stmt(parser *P) {
         s->e1 = parse_expr(P);
         if (P->err) return s;
         expect(P, T_DO, "'do' expected");
-        { int m = 0; s->e2 = parse_block(P, &m); if (!(m & U_END)) wb_lv_perr(P, "'end' expected"); }
+        { int m = 0; s->e2 = parse_loop_body(P, U_END, &m); if (!(m & U_END)) wb_lv_perr(P, "'end' expected"); }
         return s;
 
     case T_REPEAT:
         wb_lv_next_tok(P);
         s->t = N_REPEAT;
-        { int m = 0; s->e2 = parse_block(P, &m); if (!(m & U_UNTIL)) wb_lv_perr(P, "'until' expected"); }
+        { int m = 0; s->e2 = parse_loop_body(P, U_UNTIL, &m); if (!(m & U_UNTIL)) wb_lv_perr(P, "'until' expected"); }
         s->e1 = parse_expr(P);
         return s;
 
@@ -436,7 +505,7 @@ static ex *parse_stmt(parser *P) {
             if (P->err) return s;
             if (tok_is(P, ',')) { wb_lv_next_tok(P); s->e3 = parse_expr(P); }
             expect(P, T_DO, "'do' expected");
-            int m = 0; s->e4 = parse_block(P, &m);
+            int m = 0; s->e4 = parse_loop_body(P, U_END, &m);
             if (!(m & U_END)) wb_lv_perr(P, "'end' expected");
             return s;
         }
@@ -457,7 +526,7 @@ static ex *parse_stmt(parser *P) {
         s->e4 = (ex *)(intptr_t)n;           /* expression-list count */
         if (P->err) return s;
         expect(P, T_DO, "'do' expected");
-        int m = 0; s->e1 = parse_block(P, &m);   /* the loop body */
+        int m = 0; s->e1 = parse_loop_body(P, U_END, &m);   /* the loop body */
         if (!(m & U_END)) wb_lv_perr(P, "'end' expected");
         return s;
     }
@@ -633,6 +702,8 @@ const char *wb_lv_parse_driver(wb_lv *L, const char *src, pool *pl, ex **out) {
     wb_lv_next_tok(&P);
     int m = 0;
     ex *root = parse_block(&P, &m);
+    p_validate_gotos(&P);                    /* root-scope goto validation */
+    free(P.label); free(P.ldep); free(P.gotol); free(P.gdep); free(P.gres);
     if (P.err || L->has_err) {
         if (!L->err[0]) snprintf(L->err, sizeof L->err, "parse error");
         return L->err;

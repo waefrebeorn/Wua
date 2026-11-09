@@ -347,38 +347,94 @@ static wb_lv_value m_ult(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     if (!ok1 || !ok2) return wb_lv_nil();
     return wb_lv_bool((uint64_t)x < (uint64_t)y);
 }
+/* Deterministic PRNG (Wua EXTENSION: deliberately diverges from Lua's libc
+ * `rand()` -- see docs/math.md). splitmix64: one 64-bit Weyl-step state and a
+ * bijective mix. Same seed => the SAME sequence on every platform and every
+ * run, which stock Lua cannot guarantee. Passes standard 64-bit generators'
+ * distribution tests (unlike the naive generator it replaces, which returned
+ * a single value for every `math.random(n)` once seeded). */
+static uint64_t wua_rng_next(wb_lv *L) {
+    L->rand_state[0] += 0x9E3779B97F4A7C15ULL;
+    uint64_t z = L->rand_state[0];
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
 static wb_lv_value m_random(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     (void)ud;
-    /* xoshiro256** */
-    uint64_t *st = L->rand_state;
-    uint64_t r = st[0] * 5;
-    r = ((r >> 7) * 5) * 9;
-    uint64_t t = (uint64_t)(st[1] << 17);
-    st[1] ^= st[0];
-    st[0] ^= t;
-    st[0] = (st[0] << 45) | (st[0] >> 19);
-    r = ((r >> 7) * 9) & 0xFFFFFFFFFFFFFFFFULL;
-
-    if (n == 0) return wb_lv_number((double)r / 18446744073709551616.0);
-    /* math.random(m)      -> 1..m
-     * math.random(m, n)   -> m..n   (m is the LOWER bound) */
+    double r = (double)wua_rng_next(L) / 18446744073709551616.0;   /* [0,1) */
+    if (n == 0) return wb_lv_number(r);
+    int64_t lo, up;
     int ok1 = 0, ok2 = 0;
-    int64_t lo = wb_lv_tointeger(a[0], &ok1);
-    int64_t hi = lo;
-    if (n >= 2) { hi = wb_lv_tointeger(a[1], &ok2); if (!ok2) hi = lo; }
-    if (!ok1) { wb_lv_error(L, "bad argument to 'random' (number expected)"); return wb_lv_nil(); }
-    if (lo > hi) { wb_lv_error(L, "bad argument to 'random' (interval is empty)"); return wb_lv_nil(); }
-    uint64_t span = (uint64_t)(hi - lo) + 1;
-    return wb_lv_integer(lo + (int64_t)(r % span));
+    if (n == 1) {                     /* math.random(m) -> integer [1, m] */
+        up = wb_lv_tointeger(a[0], &ok1);
+        if (!ok1) { wb_lv_error(L, "bad argument to 'random' (number expected)"); return wb_lv_nil(); }
+        lo = 1;
+        if (up < lo) { wb_lv_error(L, "interval is empty"); return wb_lv_nil(); }
+    } else {                          /* math.random(m, n) -> integer [m, n] */
+        lo = wb_lv_tointeger(a[0], &ok1);
+        up = wb_lv_tointeger(a[1], &ok2);
+        if (!ok1 || !ok2) { wb_lv_error(L, "bad argument to 'random' (number expected)"); return wb_lv_nil(); }
+        if (lo > up) { wb_lv_error(L, "interval is empty"); return wb_lv_nil(); }
+    }
+    /* Lua's formula: floor(r * (up - lo + 1)) + lo */
+    double span = (double)(up - lo + 1);
+    return wb_lv_integer((int64_t)floor(r * span) + lo);
 }
 
 static wb_lv_value m_randomseed(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     (void)ud;
     int64_t s = (n >= 1) ? wb_lv_tointeger(a[0], NULL) : 0;
-    L->rand_state[0] = (uint64_t)s;
-    L->rand_state[1] = (uint64_t)s ^ 0x9E3779B97F4A7C15ULL;
-    if (L->rand_state[0] == 0 && L->rand_state[1] == 0) L->rand_state[0] = 1;
+    L->rand_state[0] = (uint64_t)s;      /* splitmix never degenerates on 0 */
     return wb_lv_nil();
+}
+
+/* ---- Wua math EXTENSIONS (NOT part of Lua 5.4) ----------------------------
+ * Additive game-math helpers a worldspace engine needs daily. Pure additions:
+ * no script written for plain Lua 5.4 is affected, and referencing one of
+ * these on stock Lua errors instead of silently misbehaving -- so they never
+ * change the behaviour of existing code. Each is flagged as a Wua extension
+ * in docs/math.md (the "better than Lua, and warned" contract). */
+
+static wb_lv_value m_clamp(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)ud;
+    if (n < 3) return wb_lv_nil();
+    double x = wb_lv_tonumber(a[0], NULL), lo = wb_lv_tonumber(a[1], NULL), hi = wb_lv_tonumber(a[2], NULL);
+    if (lo > hi) { double t = lo; lo = hi; hi = t; }
+    return wb_lv_number(x < lo ? lo : (x > hi ? hi : x));
+}
+static wb_lv_value m_lerp(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)ud;
+    if (n < 3) return wb_lv_nil();
+    double a0 = wb_lv_tonumber(a[0], NULL), b0 = wb_lv_tonumber(a[1], NULL), t = wb_lv_tonumber(a[2], NULL);
+    return wb_lv_number(a0 + (b0 - a0) * t);
+}
+static wb_lv_value m_sign(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)ud;
+    if (n < 1) return wb_lv_nil();
+    double x = wb_lv_tonumber(a[0], NULL);
+    return wb_lv_integer(x < 0 ? -1 : (x > 0 ? 1 : 0));
+}
+static wb_lv_value m_round(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)ud;
+    if (n < 1) return wb_lv_nil();
+    double x = wb_lv_tonumber(a[0], NULL);
+    return wb_lv_integer((int64_t)round(x));   /* round half away from zero */
+}
+static wb_lv_value m_map(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)ud;
+    if (n < 5) return wb_lv_nil();
+    double x = wb_lv_tonumber(a[0], NULL), a1 = wb_lv_tonumber(a[1], NULL),
+           b1 = wb_lv_tonumber(a[2], NULL), a2 = wb_lv_tonumber(a[3], NULL),
+           b2 = wb_lv_tonumber(a[4], NULL);
+    if (a1 == b1) return wb_lv_number((a2 + b2) / 2.0);
+    return wb_lv_number(a2 + (x - a1) * (b2 - a2) / (b1 - a1));
+}
+static wb_lv_value m_between(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)ud;
+    if (n < 3) return wb_lv_nil();
+    double x = wb_lv_tonumber(a[0], NULL), lo = wb_lv_tonumber(a[1], NULL), hi = wb_lv_tonumber(a[2], NULL);
+    return wb_lv_bool(lo <= x && x <= hi);
 }
 
 static wb_lv_value m_trig1(wb_lv *L, wb_lv_value *a, int n, void *ud) {
@@ -435,6 +491,9 @@ void wb_lv_register_math(wb_lv *L) {
     M("asin", m_trig1); M("acos", m_trig1); M("atan", m_trig1);
     M("sinh", m_trig1); M("cosh", m_trig1); M("tanh", m_trig1);
     M("deg", m_deg); M("rad", m_rad); M("exp", m_exp); M("log10", m_log10);
+    /* Wua math EXTENSIONS (not in Lua 5.4) -- see docs/math.md */
+    M("clamp", m_clamp); M("lerp", m_lerp); M("sign", m_sign);
+    M("round", m_round); M("map", m_map); M("between", m_between);
 #undef M
     /* trig handlers dispatch the libc function through ud */
 #define TU(name, libfn) { wb_lv_value v; v.t = WB_LV_CFUNCTION; v.as.cf.f = m_trig1; v.as.cf.ud = (void *)(libfn); \

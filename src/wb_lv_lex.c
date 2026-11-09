@@ -115,6 +115,10 @@ static void lex_number(parser *P) {
                 P->cur.type = T_INT; P->cur.i = (int64_t)acc;
             } else { P->cur.type = T_NUM; P->cur.num = acc; }
         }
+        /* Lua: a number immediately followed by a letter or `_` is malformed */
+        if (P->p < n && (s[P->p] == '_' || (s[P->p] >= 'a' && s[P->p] <= 'z') ||
+                         (s[P->p] >= 'A' && s[P->p] <= 'Z')))
+            wb_lv_perr(P, "malformed number");
         return;
     }
 
@@ -152,6 +156,10 @@ static void lex_number(parser *P) {
             P->cur.type = T_NUM; P->cur.num = strtod(s + st, NULL);
         } else { P->cur.type = T_INT; P->cur.i = ipart; }
     }
+    /* Lua: a number immediately followed by a letter or `_` is malformed */
+    if (P->p < n && (s[P->p] == '_' || (s[P->p] >= 'a' && s[P->p] <= 'z') ||
+                     (s[P->p] >= 'A' && s[P->p] <= 'Z')))
+        wb_lv_perr(P, "malformed number");
 }
 
 /* --------------------------------------------------------------- strings */
