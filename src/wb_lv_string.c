@@ -14,7 +14,10 @@
 
 static int match_class(int c, int cl) {
     int res;
-    switch (cl) {
+    if (c < 0 || c > 255) return (cl == c);
+    switch (tolower((unsigned char)cl)) {   /* Lua: lowercase the class code so
+                                             * uppercase %A/%D/%W negate via the
+                                             * isupper() flip below */
     case 'a': res = isalpha(c); break;
     case 'c': res = iscntrl(c); break;
     case 'd': res = isdigit(c); break;
@@ -420,16 +423,23 @@ static wb_lv_value s_format(wb_lv *L, wb_lv_value *a, int n) {
         spec[sp] = 0;
         char tmp[512];
         switch (conv) {
-        case 'd': case 'i': {
-            if (arg >= n) { free(buf); return wb_lv_nil(); }
-            int64_t v = wb_lv_tointeger(a[arg++], NULL);
-            snprintf(tmp, sizeof tmp, spec, (long long)v);
-            break;
-        }
+        case 'd': case 'i':
         case 'u': case 'o': case 'x': case 'X': {
             if (arg >= n) { free(buf); return wb_lv_nil(); }
             int64_t v = wb_lv_tointeger(a[arg++], NULL);
-            snprintf(tmp, sizeof tmp, spec, (long long)v);
+            /* Lua injects its integer length modifier (LUA_INTEGER_FRMLEN,
+             * "ll" on this platform) before the conversion so the width
+             * matches a 64-bit lua_Integer, and casts to the matching width.
+             * Without it, %u/%x/%o of a negative silently truncate to 32 bits. */
+            char mod[72];
+            size_t le = (size_t)strlen(spec);      /* ends with conv */
+            size_t pre = le - 1;
+            memcpy(mod, spec, pre); mod[pre] = 'l'; mod[pre + 1] = 'l';
+            mod[pre + 2] = conv; mod[pre + 3] = 0;
+            if (conv == 'u' || conv == 'o' || conv == 'x' || conv == 'X')
+                snprintf(tmp, sizeof tmp, mod, (unsigned long long)v);
+            else
+                snprintf(tmp, sizeof tmp, mod, (long long)v);
             break;
         }
         case 'c': {
@@ -612,13 +622,20 @@ static wb_lv_value s_gsub(wb_lv *L, wb_lv_value *a, int n) {
     char *buf = NULL; size_t len = 0, cap = 0;
     const char *s = src;
     int64_t count = 0;
+    const char *lastmatch = NULL;   /* end of last accepted match (Lua uses the
+                                     * same for skipping empty re-matches) */
     matchstate ms;
     do {
         ms.level = 0;
         ms.src_init = src; ms.src_end = src + ls; ms.p_end = pat + lp;
         const char *e = match(&ms, s, p);
-        if (e) {
+        /* e != lastmatch: an empty match whose end equals the previous match's
+         * end is the empty re-match right after a replacement -- Lua ignores
+         * it and copies one character instead (a?/a* on 'abc' -> '#b#c#', not
+         * '##b#c#') */
+        if (e && e != lastmatch) {
             count++;
+            lastmatch = e;
             /* apply the replacement */
             if (a[2].t == WB_LV_STR) {
                 for (const char *r = a[2].as.s; *r; r++) {

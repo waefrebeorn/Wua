@@ -307,12 +307,23 @@ static wb_lv_value m_fmod(wb_lv *L, wb_lv_value *a, int n, void *ud) {
 static wb_lv_value m_modf(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     (void)L; (void)ud;
     if (n < 1) return wb_lv_nil();
-    double d = wb_lv_tonumber(a[0], NULL);
-    double ip;
-    double fp = modf(d, &ip);
     wb_lv_value out[2];
-    out[0] = wb_lv_number(ip);
-    out[1] = wb_lv_number(fp);
+    if (a[0].t == WB_LV_INT) {
+        /* Lua 5.4: an integer is its own integer part, fraction is +0.0
+         * (never C modf's -0.0 for a negative input) */
+        out[0] = a[0];
+        out[1] = wb_lv_number(0.0);
+        return wb_lv_multi_value(L, out, 2);
+    }
+    double d = wb_lv_tonumber(a[0], NULL);
+    /* integer part rounds toward zero (Lua's n<0 ? ceil : floor) */
+    double ip = (d < 0) ? ceil(d) : floor(d);
+    /* push as an INTEGER when the integral part fits, else number */
+    if (ip >= -9.2233720368547758e18 && ip < 9.2233720368547758e18)
+        out[0] = wb_lv_integer((int64_t)ip);
+    else out[0] = wb_lv_number(ip);
+    /* Lua forces +0.0 when there is no fractional part (also for +-inf) */
+    out[1] = (d == ip) ? wb_lv_number(0.0) : wb_lv_number(d - ip);
     return wb_lv_multi_value(L, out, 2);
 }
 static wb_lv_value m_tointeger(wb_lv *L, wb_lv_value *a, int n, void *ud) {

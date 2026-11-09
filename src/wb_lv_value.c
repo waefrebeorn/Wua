@@ -36,18 +36,25 @@ int wb_lv_rawequal(wb_lv_value a, wb_lv_value b) {
     return 0;
 }
 
-/* `==` with `__eq` dispatch for tables/userdata. */
+/* `==` with `__eq` dispatch for tables/userdata. Lua 5.4 (luaV_equalobj)
+ * calls __eq when the objects differ and EITHER metatable has it -- the first
+ * operand's __eq wins, else the second's. It does NOT require a shared
+ * metamethod (that was a 5.3-era rule). */
 int wb_lv_equal(wb_lv *L, wb_lv_value a, wb_lv_value b) {
-    if (a.t == b.t && (a.t == WB_LV_TABLE)) {
+    if (a.t == b.t && a.t == WB_LV_TABLE) {
+        if (wb_lv_rawequal(a, b)) return 1;               /* same table */
         wb_lv_table *ma = wb_lv_getmetatable(L, a);
         wb_lv_table *mb = wb_lv_getmetatable(L, b);
-        if (ma && mb && wb_lv_rawequal(wb_lv_table_get(L, ma, wb_lv_str("__eq")),
-                                      wb_lv_table_get(L, mb, wb_lv_str("__eq")))) {
-            wb_lv_value f = wb_lv_table_get(L, ma, wb_lv_str("__eq"));
+        wb_lv_value f = wb_lv_nil();
+        if (ma) f = wb_lv_table_get(L, ma, wb_lv_str("__eq"));
+        if (f.t == WB_LV_NIL && mb)
+            f = wb_lv_table_get(L, mb, wb_lv_str("__eq"));
+        if (f.t != WB_LV_NIL) {
             wb_lv_value args[2]; args[0] = a; args[1] = b;
             wb_lv_value r = wb_lv_call(L, f, args, 2);
             return wb_lv_truthy(r);
         }
+        return 0;                                           /* distinct tables */
     }
     if (a.t == WB_LV_INT && b.t == WB_LV_NUM) return (double)a.as.i == b.as.n;
     if (a.t == WB_LV_NUM && b.t == WB_LV_INT) return a.as.n == (double)b.as.i;

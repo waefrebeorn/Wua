@@ -140,7 +140,12 @@ static void lex_number(parser *P) {
             val *= pow(10.0, sgn * e);
         } else P->p = save;
     }
-    if (isfloat) { P->cur.type = T_NUM; P->cur.num = val; }
+    /* decimal: use strtod over the whole token so the parse is correctly
+     * rounded like Lua's (lua_str2number = strtod). Manual fraction/exponent
+     * accumulation is off by 1 ulp for many decimals (12.149 -> 12.1490..).
+     * Keep the integer scan/overhead code above; only the float mapping uses
+     * strtod. */
+    if (isfloat) { P->cur.type = T_NUM; P->cur.num = strtod(s + st, NULL); }
     else {
         /* a decimal integer becomes a float only if it does not fit */
         if (ipart < INT64_MIN / 10 || ipart > INT64_MAX / 10) {
