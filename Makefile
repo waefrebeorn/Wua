@@ -18,15 +18,20 @@
 #   git submodule update --init --recursive
 
 CC      = gcc
-CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Isrc
+# -MMD -MP emits per-object dependency files so a header edit rebuilds every
+# dependent source (adopted from WuBuNOS, which commits its own .d tracking).
+CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -MMD -MP -Isrc
 LDLIBS  ?= -lm
 
 LV_SRC  := $(wildcard src/wb_lv_*.c)
 LV_OBJS := $(patsubst src/%.c,src/%.o,$(LV_SRC))
+DEPS    := $(LV_OBJS:.o=.d)
 CORE    := wua_test.exe
 SCRIPT  := wua_script_test.exe
 
-.PHONY: all test test-core test-script clean
+-include $(DEPS)
+
+.PHONY: all test test-core test-script fuzz gauntlet clean
 
 all: test
 
@@ -53,5 +58,16 @@ test: test-core test-script
 fuzz:
 	python3 tests/fuzz_lua.py 100
 
+# gauntlet: the deep differential corpus, one domain per interpreter build.
+# Mirrors WuBuNOS's own "run a big third-party corpus" gauntlet practice.
+gauntlet: test
+	python3 tests/fuzz_lua.py 150
+	python3 tests/fuzz_grids.py num 150
+	python3 tests/fuzz_grids.py format 120
+	python3 tests/fuzz_grids.py meta 120
+	python3 tests/fuzz_grids.py coro 80
+	python3 tests/fuzz_grids.py tbl 80
+	python3 tests/fuzz_grids.py varg 120
+
 clean:
-	rm -f $(CORE) $(SCRIPT) $(LV_OBJS)
+	rm -f $(CORE) $(SCRIPT) $(LV_OBJS) $(DEPS)
