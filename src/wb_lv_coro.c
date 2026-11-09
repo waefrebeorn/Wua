@@ -269,7 +269,6 @@ static wb_lv_value cfn_wrap(wb_lv *L, wb_lv_value *args, int n, void *ud) {
     wb_lv_value cf; cf.t = WB_LV_CFUNCTION; cf.as.cf.f = cfn_wrap_call; cf.as.cf.ud = co;
     return cf;
 #else
-    (void)co;
     wb_lv_error(L, "coroutines are not supported on this platform");
     return wb_lv_nil();
 #endif
@@ -286,7 +285,6 @@ static wb_lv_value cfn_create(wb_lv *L, wb_lv_value *args, int n, void *ud) {
     wb_lv_value r; r.t = WB_LV_TABLE; r.as.tab = co->handle_tab;
     return r;
 #else
-    (void)co;
     wb_lv_error(L, "coroutines are not supported on this platform");
     return wb_lv_nil();
 #endif

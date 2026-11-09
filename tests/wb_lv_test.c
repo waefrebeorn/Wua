@@ -202,6 +202,43 @@ int main(void) {
         CHECK(wb_lv_run(L, "function f(n) return 1 + f(n+1) end\nf(0)", "rec") != NULL,
               "unbounded script recursion reports an error");
     }
+    {
+        /* gsub replacement paths (Lua 5.4 semantics). A table or function
+         * result that is nil/false keeps the ORIGINAL match; a string or
+         * number replaces it; anything else is an error. The table path used
+         * to emit nothing for unmatched keys, silently dropping characters. */
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "echo((string.gsub('abc', '%a', {a='X'})))", "gsub1");
+        check_rec(&r, "Xbc");
+
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "echo((string.gsub('abc', '%a', {a='X', b='Y'})))", "gsub2");
+        check_rec(&r, "XYc");
+
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "echo((string.gsub('abc', '%a', {})))", "gsub3");
+        check_rec(&r, "abc");
+
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "echo((string.gsub('ab', '%a', {a=false})))", "gsub4");
+        check_rec(&r, "ab");
+
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "echo((string.gsub('ab', '%a', function(c) return nil end)))", "gsub5");
+        check_rec(&r, "ab");
+
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "echo((string.gsub('ab', '%a', function(c) return 7 end)))", "gsub6");
+        check_rec(&r, "77");
+
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "echo((string.gsub('abc', '%a', 'X')))", "gsub7");
+        check_rec(&r, "XXX");
+
+        /* an invalid replacement value raises; it does not silently drop */
+        CHECK(wb_lv_run(L, "string.gsub('a', '%a', {a=true})", "gsub8") != NULL,
+              "a boolean table replacement raises");
+    }
 
     wb_lv_free(L);
     printf("\n=== LV TESTS: %d pass, %d fail ===\n", g_pass, g_fail);

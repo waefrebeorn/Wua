@@ -610,6 +610,35 @@ static wb_lv_value s_gmatch(wb_lv *L, wb_lv_value *a, int n) {
     return it;
 }
 
+/* Append one gsub replacement to the accumulator. Lua 5.4 semantics: a nil or
+ * false result keeps the ORIGINAL match; a string or number is used as the
+ * replacement; anything else is an error. Returns 0 on success, -1 once
+ * L->has_err is set. */
+static int gsub_add_value(wb_lv *L, const char *s, const char *e,
+                          wb_lv_value rep, char **buf, size_t *len, size_t *cap) {
+    if (rep.t == WB_LV_NIL || (rep.t == WB_LV_BOOL && !rep.as.b)) {
+        size_t l = (size_t)(e - s);              /* keep the original match */
+        while (*len + l + 1 > *cap) { *cap = *cap * 2 + 32; *buf = (char *)realloc(*buf, *cap); }
+        memcpy(*buf + *len, s, l); *len += l;
+        return 0;
+    }
+    if (rep.t == WB_LV_STR) {
+        size_t l = rep.slen;
+        while (*len + l + 1 > *cap) { *cap = *cap * 2 + 32; *buf = (char *)realloc(*buf, *cap); }
+        memcpy(*buf + *len, rep.as.s, l); *len += l;
+        return 0;
+    }
+    if (rep.t == WB_LV_NUM || rep.t == WB_LV_INT) {
+        const char *rs = wb_lv_tostring_intern(L, rep);
+        size_t l = strlen(rs);
+        while (*len + l + 1 > *cap) { *cap = *cap * 2 + 32; *buf = (char *)realloc(*buf, *cap); }
+        memcpy(*buf + *len, rs, l); *len += l;
+        return 0;
+    }
+    wb_lv_error(L, "invalid replacement value (a %s)", wb_lv_type_name(rep.t));
+    return -1;
+}
+
 static wb_lv_value s_gsub(wb_lv *L, wb_lv_value *a, int n) {
     if (n < 3 || a[0].t != WB_LV_STR || a[1].t != WB_LV_STR) return wb_lv_nil();
     const char *src = a[0].as.s;
@@ -685,33 +714,15 @@ static wb_lv_value s_gsub(wb_lv *L, wb_lv_value *a, int n) {
                 }
             } else if (a[2].t == WB_LV_TABLE) {
                 wb_lv_value caps[MAXCAPTURES];
-                int nc = push_captures(L, &ms, s, e, caps);
+                push_captures(L, &ms, s, e, caps);
                 wb_lv_value rep = wb_lv_table_get(L, a[2].as.tab, caps[0]);
-                if (rep.t == WB_LV_STR) {
-                    size_t l = rep.slen;
-                    while (len + l + 1 > cap) { cap = cap*2+32; buf = (char*)realloc(buf, cap); }
-                    memcpy(buf + len, rep.as.s, l); len += l;
-                } else if (rep.t == WB_LV_NUM || rep.t == WB_LV_INT) {
-                    const char *rs = wb_lv_tostring_intern(L, rep);
-                    size_t l = strlen(rs);
-                    while (len + l + 1 > cap) { cap = cap*2+32; buf = (char*)realloc(buf, cap); }
-                    memcpy(buf + len, rs, l); len += l;
-                }
+                if (gsub_add_value(L, s, e, rep, &buf, &len, &cap) != 0) goto gsub_done;
             } else if (a[2].t == WB_LV_FUNCTION || a[2].t == WB_LV_CFUNCTION) {
                 wb_lv_value caps[MAXCAPTURES];
                 int nc = push_captures(L, &ms, s, e, caps);
                 if (nc == 0) { caps[0] = wb_lv_strl(wb_lv_intern(L, s, (size_t)(e - s)), (size_t)(e - s)); nc = 1; }
                 wb_lv_value rep = wb_lv_call(L, a[2], caps, nc);
-                if (rep.t == WB_LV_STR) {
-                    size_t l = rep.slen;
-                    while (len + l + 1 > cap) { cap = cap*2+32; buf = (char*)realloc(buf, cap); }
-                    memcpy(buf + len, rep.as.s, l); len += l;
-                } else if (rep.t == WB_LV_NUM || rep.t == WB_LV_INT) {
-                    const char *rs = wb_lv_tostring_intern(L, rep);
-                    size_t l = strlen(rs);
-                    while (len + l + 1 > cap) { cap = cap*2+32; buf = (char*)realloc(buf, cap); }
-                    memcpy(buf + len, rs, l); len += l;
-                }
+                if (gsub_add_value(L, s, e, rep, &buf, &len, &cap) != 0) goto gsub_done;
             }
             if (e == s) {
                 /* empty match: copy one character and move past it, or the
