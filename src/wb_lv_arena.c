@@ -10,5 +10,6 @@ void *wb_lv_arena_alloc(wb_lv *L, size_t n) {
     if (!h) return NULL;
     h->next = L->root;
     L->root = h;
+    L->arena_bytes += sizeof(anode) + n;
     return (void *)(h + 1);
 }

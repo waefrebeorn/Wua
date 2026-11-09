@@ -281,8 +281,18 @@ wb_lv_table *wb_lv_getmetatable(wb_lv *L, wb_lv_value v) {
 }
 
 void wb_lv_setmetatable(wb_lv *L, wb_lv_table *t, wb_lv_table *meta) {
-    (void)L;
-    if (t) t->meta = meta;
+    if (t) {
+        t->meta = meta;
+        /* track every table that receives a metatable so collectgarbage can
+         * find the ones carrying a __gc eventually */
+        for (int i = 0; i < L->mtab_n; i++) if (L->mtab[i] == t) return;
+        if (L->mtab_n >= L->mtab_cap) {
+            int nc = L->mtab_cap ? L->mtab_cap * 2 : 64;
+            wb_lv_table **nn = (wb_lv_table **)realloc(L->mtab, (size_t)nc * sizeof(*nn));
+            if (nn) { L->mtab = nn; L->mtab_cap = nc; }
+        }
+        if (L->mtab_n < L->mtab_cap) L->mtab[L->mtab_n++] = t;
+    }
 }
 
 int wb_lv_has_meta(wb_lv *L, wb_lv_value v, const char *event) {

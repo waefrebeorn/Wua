@@ -82,13 +82,26 @@ static void env_assign(wb_lv *L, env *e, const char *name, wb_lv_value v) {
     wb_lv_table_set(L, L->globals, wb_lv_str(name), v);
 }
 
+static void env_push(wb_lv *L, env *e) {
+    if (L->envtop >= L->envcap) {
+        int nc = L->envcap ? L->envcap * 2 : 32;
+        env **nn = (env **)realloc(L->envst, (size_t)nc * sizeof(*nn));
+        if (!nn) return;
+        L->envst = nn; L->envcap = nc;
+    }
+    L->envst[L->envtop++] = e;
+}
 static env *new_env(wb_lv *L, env *parent) {
     env *e = WB_LV_ALLOC(env, L);
     if (!e) return NULL;
     e->t = wb_lv_table_new(L, 0, 8);
     e->consts = wb_lv_table_new(L, 0, 4);
     e->parent = parent;
+    env_push(L, e);                 /* track active scopes for the GC       */
     return e;
+}
+static void env_pop(wb_lv *L) {
+    if (L->envtop > 0) { L->envtop--; L->envst[L->envtop] = NULL; }
 }
 
 /* ---------------------------------------------------------- value stack */
@@ -746,6 +759,7 @@ int wb_lv_call_lua_results(wb_lv *L, wb_lv_func *fn, wb_lv_value *args, int narg
 
     L->va = save_va; L->nva = save_nva;
     L->depth--;
+    env_pop(L);                     /* the call frame's scope is done        */
     return n;
 }
 
@@ -797,6 +811,7 @@ wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
                 return wb_lv_nil();
             }
         }
+        env_pop(L);
         L->curline = save;
         return wb_lv_nil();
     }
@@ -989,6 +1004,7 @@ wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
                 if (L->has_goto) { if (L->goto_label == NULL) L->has_goto = 0; break; }
             }
         }
+        env_pop(L);
         L->curline = save;
         return wb_lv_nil();
     }
@@ -1021,12 +1037,14 @@ wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
                 break;
             }
         }
+        env_pop(L);
         L->curline = save;
         return wb_lv_nil();
     }
     case N_DO: {
         env *de = new_env(L, en);
         wb_lv_value r = exec(L, e->e1, de ? de : en, was_return);
+        env_pop(L);
         L->curline = save;
         return r;
     }
@@ -1070,4 +1088,87 @@ wb_lv_value wb_lv_exec_root(wb_lv *L, ex *root) {
     int wr = 0;
     exec(L, root, top, &wr);
     return wb_lv_nil();
+}
+
+/* --------------------------------------------------------------- garbage */
+/*
+ * Finalizers, conservatively. Tables live in a non-reclaiming arena, so the
+ * mark/sweep here only decides liveness to run __gc; it frees nothing. Roots
+ * are the globals, every currently-active execution scope (env stack), the
+ * value stack and the active varargs. Propagate through table entries,
+ * metatables and function environments. A table that carries a __gc in its
+ * metatable and is unreachable has its __gc called exactly once. Over-marking
+ * is safe (a false live keeps it alive); under-marking would call a finalizer
+ * on a live object, so the root set must be complete.
+ */
+
+typedef struct { wb_lv *L; wb_lv_table **wk; int wn, wcap; } gctx;
+
+static void gcadd(gctx *g, wb_lv_table *t) {
+    if (!t || t->gcgen == g->L->gc_epoch) return;
+    t->gcgen = g->L->gc_epoch;
+    if (g->wn >= g->wcap) {
+        int nc = g->wcap * 2 + 16;
+        wb_lv_table **nn = (wb_lv_table **)realloc(g->wk, (size_t)nc * sizeof(*nn));
+        if (!nn) return;                 /* over-mark kept live: safe */
+        g->wk = nn; g->wcap = nc;
+    }
+    if (g->wn < g->wcap) g->wk[g->wn++] = t;
+}
+
+static void gcmark(gctx *g, wb_lv_value v) {
+    if (v.t == WB_LV_TABLE) gcadd(g, v.as.tab);
+    else if (v.t == WB_LV_FUNCTION) {
+        if (v.as.fn && v.as.fn->defining) {
+            gcadd(g, v.as.fn->defining->t);
+            gcadd(g, v.as.fn->defining->consts);
+        }
+    } else if (v.t == WB_LV_MULTI) {
+        for (int i = 0; v.as.multi && i < v.as.multi->n; i++) gcmark(g, v.as.multi->v[i]);
+    }
+}
+
+size_t wb_lv_gc_count(wb_lv *L) {
+    return L ? (L->arena_bytes / 1024) : 0;   /* KB, as Lua's 'count' */
+}
+
+void wb_lv_gc_collect(wb_lv *L) {
+    if (!L) return;
+    L->gc_epoch++;
+    if (L->gc_epoch == 0) L->gc_epoch = 1;
+
+    gctx g; g.L = L; g.wk = NULL; g.wn = 0; g.wcap = 0;
+
+    /* roots: globals, active scopes, value stack, varargs */
+    gcadd(&g, L->globals);
+    gcadd(&g, L->string_meta);
+    for (int i = 0; i < L->envtop && L->envst; i++) {
+        if (L->envst[i]) { gcadd(&g, L->envst[i]->t); gcadd(&g, L->envst[i]->consts); }
+    }
+    for (int i = 0; i < L->sp && i < L->scap; i++) gcmark(&g, L->stk[i]);
+    for (int i = 0; i < L->nva && L->va; i++) gcmark(&g, L->va[i]);
+
+    /* propagate through entries, metatables and function environments */
+    for (int i = 0; i < g.wn; i++) {
+        wb_lv_table *t = g.wk[i];
+        if (t->meta) gcadd(&g, t->meta);
+        if (t->e) for (size_t j = 0; j < t->cap; j++) {
+            wb_lv_kv *kv = &t->e[j];
+            if (kv->used && !kv->tomb) { gcmark(&g, kv->k); gcmark(&g, kv->v); }
+        }
+    }
+
+    /* finalize unreachable tables that carry __gc */
+    for (int i = L->mtab_n - 1; i >= 0; i--) {        /* newest first, like Lua */
+        wb_lv_table *t = L->mtab[i];
+        if (!t || t->gc_done || !t->meta) continue;
+        if (t->gcgen == L->gc_epoch) continue;                 /* reachable */
+        wb_lv_value f = wb_lv_table_get(L, t->meta, wb_lv_str("__gc"));
+        if (f.t == WB_LV_FUNCTION || f.t == WB_LV_CFUNCTION) {
+            wb_lv_value self; self.t = WB_LV_TABLE; self.as.tab = t;
+            wb_lv_call(L, f, &self, 1);
+            t->gc_done = 1;
+        }
+    }
+    free(g.wk);
 }

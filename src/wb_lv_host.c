@@ -35,6 +35,19 @@ wb_lv *wb_lv_new(void) {
 }
 
 void wb_lv_free(wb_lv *L) {
+    /* run any pending __gc finalizers before the arena is destroyed */
+    if (L) {
+        for (int i = L->mtab_n - 1; i >= 0; i--) {     /* newest first, like Lua */
+            wb_lv_table *t = L->mtab[i];
+            if (!t || t->gc_done || !t->meta) continue;
+            wb_lv_value f = wb_lv_table_get(L, t->meta, wb_lv_str("__gc"));
+            if (f.t == WB_LV_FUNCTION || f.t == WB_LV_CFUNCTION) {
+                wb_lv_value self; self.t = WB_LV_TABLE; self.as.tab = t;
+                wb_lv_call(L, f, &self, 1);
+                t->gc_done = 1;
+            }
+        }
+    }
     if (!L) return;
     anode *n = L->root, *nx;
     while (n) { nx = n->next; free(n); n = nx; }
@@ -185,6 +198,17 @@ static wb_lv_value cfn_assert(wb_lv *L, wb_lv_value *args, int n, void *ud) {
         return wb_lv_nil();
     }
     return wb_lv_multi_value(L, args, n);
+}
+
+static wb_lv_value cfn_collectgarbage(wb_lv *L, wb_lv_value *args, int n, void *ud) {
+    (void)ud;
+    const char *opt = (n >= 1 && args[0].t == WB_LV_STR) ? args[0].as.s : "collect";
+    if (!strcmp(opt, "count")) return wb_lv_number((double)wb_lv_gc_count(L));
+    if (!strcmp(opt, "collect") || !strcmp(opt, "step")) { wb_lv_gc_collect(L); return wb_lv_integer(1); }
+    if (!strcmp(opt, "stop") || !strcmp(opt, "restart")) return wb_lv_integer(0);
+    if (!strcmp(opt, "isrunning")) return wb_lv_bool(1);
+    if (!strcmp(opt, "incremental")) return wb_lv_integer(0);
+    return wb_lv_integer(0);
 }
 
 static wb_lv_value cfn_error(wb_lv *L, wb_lv_value *args, int n, void *ud) {
@@ -411,11 +435,6 @@ static wb_lv_value cfn_load(wb_lv *L, wb_lv_value *args, int n, void *ud) {
     return r;
 }
 
-static wb_lv_value cfn_collectgarbage(wb_lv *L, wb_lv_value *args, int n, void *ud) {
-    (void)L; (void)args; (void)n; (void)ud;
-    return wb_lv_integer(0);
-}
-
 static wb_lv_value cfn_unimplemented(wb_lv *L, wb_lv_value *args, int n, void *ud) {
     (void)args; (void)n;
     wb_lv_error(L, "%s is not implemented in slerm-Lua", (const char *)ud);
@@ -434,6 +453,7 @@ void wb_lv_register_builtins(wb_lv *L) {
     wb_lv_register_global(L, "pcall", cfn_pcall, NULL);
     wb_lv_register_global(L, "xpcall", cfn_xpcall, NULL);
     wb_lv_register_global(L, "select", cfn_select, NULL);
+    wb_lv_register_global(L, "collectgarbage", cfn_collectgarbage, NULL);
     wb_lv_register_global(L, "next", cfn_next, NULL);
     wb_lv_register_global(L, "pairs", cfn_pairs, NULL);
     wb_lv_register_global(L, "ipairs", cfn_ipairs, NULL);
@@ -444,7 +464,6 @@ void wb_lv_register_builtins(wb_lv *L) {
     wb_lv_register_global(L, "setmetatable", cfn_setmetatable, NULL);
     wb_lv_register_global(L, "getmetatable", cfn_getmetatable, NULL);
     wb_lv_register_global(L, "load", cfn_load, NULL);
-    wb_lv_register_global(L, "collectgarbage", cfn_collectgarbage, NULL);
     wb_lv_register_global(L, "unpack", cfn_unimplemented, "unpack (use table.unpack)");
 
     /* _VERSION */

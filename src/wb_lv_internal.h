@@ -89,6 +89,13 @@ struct wb_lv {
     wb_lv_value *va; int nva;
 
     uint64_t rand_state[2];
+
+    /* finalizers: every table that ever received a metatable is tracked; at
+     * collectgarbage('collect') the unreachable ones with a __gc run once. */
+    wb_lv_table **mtab; int mtab_n, mtab_cap;
+    unsigned gc_epoch;                     /* mark/release generation        */
+    struct env **envst; int envtop, envcap; /* active env scopes for the GC   */
+    size_t arena_bytes;                    /* bytes handed out by the arena     */
 };
 
 /* --------------------------------------------------------- string pool */
@@ -97,12 +104,14 @@ typedef struct istr { char *s; size_t len; unsigned hash; struct istr *next; } i
 
 /* --------------------------------------------------------------- tables */
 
-typedef struct wb_lv_kv { wb_lv_value k, v; int used; int tomb; } wb_lv_kv;
+typedef struct wb_lv_kv { wb_lv_value k, v; int used; int tomb; int cm; } wb_lv_kv;
 struct wb_lv_table {
     wb_lv_kv *e; size_t cap, count;
     struct wb_lv_table *meta;
     size_t seq;                      /* cached array-part length for `#`     */
     int seq_dirty;
+    unsigned gcgen;                  /* last mark generation (0 = none)     */
+    int gc_done;                     /* __gc already ran                     */
 };
 
 /* --------------------------------------------------------------- parser */
@@ -189,5 +198,8 @@ void wb_lv_register_io(wb_lv *L);
 void wb_lv_register_debug(wb_lv *L);
 void wb_lv_register_utf8(wb_lv *L);
 void wb_lv_register_coro(wb_lv *L);
+void wb_lv_setmetatable(wb_lv *L, wb_lv_table *t, wb_lv_table *meta);
+void wb_lv_gc_collect(wb_lv *L);
+size_t wb_lv_gc_count(wb_lv *L);
 
 #endif /* WB_LV_INTERNAL_H */
