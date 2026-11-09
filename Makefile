@@ -14,6 +14,8 @@
 #   git submodule update --init --recursive
 
 CC      ?= gcc
+# mingw32-make ships a built-in CC=cc, which does not exist on this box.
+CC      = gcc
 CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Isrc
 LDLIBS  ?= -lm
 
