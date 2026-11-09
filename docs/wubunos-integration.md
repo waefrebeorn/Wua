@@ -90,8 +90,11 @@ Wua -> WuBuNOS (available to adopt):
   missed (64-bit `%u`/`%x`, `%D` negated classes, `__eq` rules, `modf` integer
   part, 1-ulp decimal literal parse, gsub empty-match advancement).
 - gates: `tests/wb_lv_test.c` (27 core) + `tests/wb_lv_script_test.c` (5).
-- `games/gamemode_showcase.lua` — a 37-assertion tour of the full surface;
-  diff its `ok` lines against the reference interpreter.
+- `tests/stress_runner.py` + `tests/stress/*.lua` (`make stress`) — 11 load
+  tests run under both interpreters checking no-hang / no-crash / identical
+  stdout / determinism. This caught a call-depth leak on caught errors and the
+  missing proper-tail-call guarantee, so it is a real robustness gate, not a
+  numbers benchmark.
 
 ## Fuzzer semantics (so they can be trusted)
 
