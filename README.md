@@ -87,6 +87,15 @@ make test           # 27 core assertions + 5 script assertions
 
 Requires a C11 compiler. On Windows use MinGW-w64 (`gcc`/`mingw32-make`).
 
+`make fuzz` runs the differential fuzzer (`tests/fuzz_lua.py`): it generates
+random type-consistent Lua programs and compares Wua's output to the reference
+Lua 5.4 interpreter. Run it after interpreter edits; 1000+ cases across seeds
+pass clean. The official `github.com/lua/tests` 5.4 suite also loads and runs
+through Wua (a few edge-conformance files still diverge).
+
+Objects are cached per source, so an edit rebuilds one file and relinks
+(~0.5s) instead of recompiling everything (~6s).
+
 ## Use as a submodule
 
 ```bash

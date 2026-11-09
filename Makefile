@@ -49,5 +49,9 @@ test-script: $(SCRIPT)
 
 test: test-core test-script
 
+# differential fuzzer vs the reference interpreter (needs python3 + lua54ref)
+fuzz:
+	python3 tests/fuzz_lua.py 100
+
 clean:
 	rm -f $(CORE) $(SCRIPT) $(LV_OBJS)
