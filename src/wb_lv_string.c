@@ -709,6 +709,280 @@ static wb_lv_value s_gsub(wb_lv *L, wb_lv_value *a, int n) {
     return wb_lv_multi_value(L, out, 2);
 }
 
+
+/* ----------------------------------------------------------- pack/unpack */
+
+typedef struct {
+    size_t off;            /* current offset in the packed bytes (0-based)   */
+    int little;            /* endianness: 1 little, 0 big                    */
+    int maxalign;          /* 1..16, 0 = unconstrained (& native align)      */
+    int err;
+} pstate;
+
+static int p_option_size(char c, const char **digits, char **endptr_out);
+
+/* reader primitives -- read/write an integer/floating value at off */
+static void putint(unsigned char *out, uint64_t v, size_t n, int little) {
+    for (size_t i = 0; i < n; i++)
+        out[little ? i : n - 1 - i] = (unsigned char)((v >> (8 * i)) & 0xFF);
+}
+static uint64_t getint(const unsigned char *p, size_t n, int little) {
+    uint64_t v = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char b = p[little ? i : n - 1 - i];
+        v |= ((uint64_t)b) << (8 * i);
+    }
+    return v;
+}
+static int64_t sgnextend(uint64_t v, size_t n) {
+    if (n < 8 && (v >> (8 * n - 1))) v |= (~0ULL) << (8 * n);   /* sign extend */
+    return (int64_t)v;
+}
+static size_t align_next(size_t off, size_t a) {
+    if (a <= 1) return off;
+    return (off + a - 1) / a * a;
+}
+
+/* parse an option char at *fp (already skipped over the option); consumes any
+ * trailing digit string and returns the option's value length (0 = variable). */
+static size_t read_size_arg(const char **fp, const char *fe) {
+    size_t n = 0;
+    while (*fp < fe && **fp >= '0' && **fp <= '9') { n = n * 10 + (size_t)(**fp - '0'); (*fp)++; }
+    return n;
+}
+
+static size_t p_intsize(char c, size_t nice) {
+    switch (c) {
+    case 'b': case 'B': return 1;
+    case 'h': case 'H': return 2;
+    case 'l': case 'L': return 4;
+    case 'j': case 'J': case 'T': return sizeof(int64_t);
+    case 'i': case 'I': return nice ? nice : 4;
+    }
+    return 0;
+}
+
+static unsigned char *p_grow(const unsigned char *b, size_t *cap, size_t need) {
+    while (*cap < need) *cap = *cap ? *cap * 2 : 64;
+    return (unsigned char *)realloc((void *)b, *cap);
+}
+
+static wb_lv_value s_pack(wb_lv *L, wb_lv_value *a, int n) {
+    if (n < 1 || a[0].t != WB_LV_STR) { wb_lv_error(L, "bad argument #1 to 'pack'"); return wb_lv_nil(); }
+    const char *f = a[0].as.s; const char *fe = f + a[0].slen;
+    pstate st; st.off = 0; st.little = 1; st.maxalign = 0; st.err = 0;
+    size_t cap = 0; unsigned char *buf = NULL;
+    int arg = 1;
+    while (f < fe) {
+        char c = *f++;
+        if (c == ' ' || c == '\t' || c == '\n') continue;
+        size_t optarg = 0;
+        if (c == '<') { st.little = 1; continue; }
+        if (c == '>') { st.little = 0; continue; }
+        if (c == '=') { st.little = 1; continue; }
+        if (c == '!') { st.maxalign = (int)read_size_arg(&f, fe); if (st.maxalign < 1 || st.maxalign > 16) { free(buf); wb_lv_error(L, "integral size out of limits"); return wb_lv_nil(); } continue; }
+        if (c == 'x') { st.off++; continue; }
+        if (c == 'b' || c == 'B' || c == 'h' || c == 'H' || c == 'l' || c == 'L' ||
+            c == 'j' || c == 'J' || c == 'T' || c == 'i' || c == 'I') {
+            size_t sz = p_intsize(c, read_size_arg(&f, fe));
+            st.off = align_next(st.off, st.maxalign ? (sz < (size_t)st.maxalign ? sz : (size_t)st.maxalign) : 1);
+            if (arg >= n) { free(buf); wb_lv_error(L, "bad argument #%d to 'pack' (value expected)", arg + 1); return wb_lv_nil(); }
+            wb_lv_value v = a[arg++];
+            int64_t sv = wb_lv_tointeger(v, NULL);
+            uint64_t u;
+            if (c == 'B' || c == 'H' || c == 'L' || c == 'J' || c == 'I' || c == 'T') {
+                /* unsigned: value must be non-negative and fit the field */
+                if (sv < 0 || (sz < 8 && (uint64_t)sv > (((uint64_t)1) << (8 * sz)) - 1))
+                    { free(buf); wb_lv_error(L, "integer overflow in 'pack'"); return wb_lv_nil(); }
+                u = (uint64_t)sv;
+            } else {
+                /* signed: value must fit the signed range for that size */
+                int64_t hi = (sz < 8) ? (((int64_t)1) << (8 * sz - 1)) - 1 : INT64_MAX;
+                int64_t lo = (sz < 8) ? -(((int64_t)1) << (8 * sz - 1)) : INT64_MIN;
+                if (sv < lo || sv > hi)
+                    { free(buf); wb_lv_error(L, "integer overflow in 'pack'"); return wb_lv_nil(); }
+                u = (uint64_t)sv;
+            }
+            buf = p_grow(buf, &cap, st.off + sz); memset(buf + st.off, 0, sz);
+            putint(buf + st.off, u, sz, st.little);
+            st.off += sz;
+            continue;
+        }
+        if (c == 'f' || c == 'd' || c == 'n') {
+            size_t sz = (c == 'f') ? 4 : 8;
+            st.off = align_next(st.off, st.maxalign ? (sz < (size_t)st.maxalign ? sz : (size_t)st.maxalign) : 1);
+            if (arg >= n) { free(buf); wb_lv_error(L, "bad argument #%d to 'pack' (value expected)", arg + 1); return wb_lv_nil(); }
+            double dv = wb_lv_tonumber(a[arg++], NULL);
+            buf = p_grow(buf, &cap, st.off + sz); memset(buf + st.off, 0, sz);
+            if (sz == 4) { float fv = (float)dv; memcpy(buf + st.off, &fv, 4);
+                if (!st.little) { unsigned char *q = buf + st.off; for (int k = 0; k < 2; k++) { unsigned char t = q[k]; q[k] = q[3 - k]; q[3 - k] = t; } } }
+            else { double qv = dv; memcpy(buf + st.off, &qv, 8);
+                if (!st.little) { unsigned char *q = buf + st.off; for (int k = 0; k < 4; k++) { unsigned char t = q[k]; q[k] = q[7 - k]; q[7 - k] = t; } } }
+            st.off += sz;
+            continue;
+        }
+        if (c == 'z') {
+            if (arg >= n) { free(buf); wb_lv_error(L, "bad argument #%d to 'pack' (value expected)", arg + 1); return wb_lv_nil(); }
+            wb_lv_value v = a[arg++];
+            const char *ss = (v.t == WB_LV_STR) ? v.as.s : wb_lv_tostring_intern(L, v);
+            size_t sl = (v.t == WB_LV_STR) ? v.slen : strlen(ss);
+            buf = p_grow(buf, &cap, st.off + sl + 1);
+            memcpy(buf + st.off, ss, sl); buf[st.off + sl] = 0;
+            st.off += sl + 1;
+            continue;
+        }
+        if (c == 'c') {
+            size_t sz = read_size_arg(&f, fe); if (!sz) sz = 1;
+            if (arg >= n) { free(buf); wb_lv_error(L, "bad argument #%d to 'pack' (value expected)", arg + 1); return wb_lv_nil(); }
+            wb_lv_value v = a[arg++];
+            const char *ss = (v.t == WB_LV_STR) ? v.as.s : wb_lv_tostring_intern(L, v);
+            size_t sl = (v.t == WB_LV_STR) ? v.slen : strlen(ss);
+            buf = p_grow(buf, &cap, st.off + sz);
+            if (st.off + sz > cap) { /* grown above */ }
+            unsigned char *dst = buf + st.off;
+            size_t take = sl < sz ? sl : sz;
+            memset(dst, 0, sz); if (take) memcpy(dst, ss, take);
+            st.off += sz;
+            continue;
+        }
+        if (c == 's') {
+            size_t sz = read_size_arg(&f, fe);   /* sz = length-prefix bytes */
+            if (arg >= n) { free(buf); wb_lv_error(L, "bad argument #%d to 'pack' (value expected)", arg + 1); return wb_lv_nil(); }
+            wb_lv_value v = a[arg++];
+            const char *ss = (v.t == WB_LV_STR) ? v.as.s : wb_lv_tostring_intern(L, v);
+            size_t sl = (v.t == WB_LV_STR) ? v.slen : strlen(ss);
+            size_t pfb = (sz == 0) ? sizeof(size_t) : sz;
+            if (pfb > sizeof(size_t)) pfb = sizeof(size_t);
+            if (sl < (1ULL << (8 * pfb)) ? 0 : 1) { }
+            buf = p_grow(buf, &cap, st.off + pfb + sl);
+            for (size_t k = 0; k < pfb; k++) putint(buf + st.off, (uint64_t)sl, pfb, st.little);
+            memcpy(buf + st.off + pfb, ss, sl);
+            st.off += pfb + sl;
+            continue;
+        }
+        free(buf); wb_lv_error(L, "invalid format option '%c' to 'pack'", c); return wb_lv_nil();
+    }
+    if (arg != n) { free(buf); wb_lv_error(L, "too many arguments to 'pack'"); return wb_lv_nil(); }
+    /* out-of-bounds guard should have grown buf by now; build the result */
+    if (!buf) buf = (unsigned char *)malloc(1);
+    wb_lv_value r = wb_lv_strl(wb_lv_intern(L, (const char *)buf, st.off), st.off);
+    free(buf);
+    return r;
+}
+
+static wb_lv_value s_unpack(wb_lv *L, wb_lv_value *a, int n) {
+    if (n < 2 || a[0].t != WB_LV_STR || a[1].t != WB_LV_STR) { wb_lv_error(L, "bad arguments to 'unpack'"); return wb_lv_nil(); }
+    const char *f = a[0].as.s; const char *fe = f + a[0].slen;   /* fmt first */
+    const unsigned char *src = (const unsigned char *)a[1].as.s;  /* data second */
+    size_t slen = a[1].slen;
+    pstate st; st.off = (n >= 3) ? (size_t)wb_lv_tointeger(a[2], NULL) : 1; st.off--;
+    st.little = 1; st.maxalign = 0; st.err = 0;
+    wb_lv_value out[256]; int no = 0;
+    int failed = 0;
+    while (f < fe && !failed) {
+        char c = *f++;
+        if (c == '<') { st.little = 1; continue; }
+        if (c == '>') { st.little = 0; continue; }
+        if (c == '=') { st.little = 1; continue; }
+        if (c == ' ') { continue; }
+        if (c == '!') { st.maxalign = (int)read_size_arg(&f, fe); if (st.maxalign < 1 || st.maxalign > 16) { failed = 1; break; } continue; }
+        if (c == 'x') { st.off++; continue; }
+        if (c == 'b' || c == 'B' || c == 'h' || c == 'H' || c == 'l' || c == 'L' ||
+            c == 'j' || c == 'J' || c == 'T' || c == 'i' || c == 'I') {
+            size_t sz = p_intsize(c, read_size_arg(&f, fe));
+            st.off = align_next(st.off, st.maxalign ? (sz < (size_t)st.maxalign ? sz : (size_t)st.maxalign) : 1);
+            if (st.off + sz > slen) { failed = 1; break; }
+            uint64_t u = getint(src + st.off, sz, st.little);
+            st.off += sz;
+            if (c == 'B' || c == 'H' || c == 'L' || c == 'J' || c == 'I' || c == 'T')
+                out[no++] = wb_lv_integer((int64_t)u);
+            else out[no++] = wb_lv_integer(sgnextend(u, sz));
+            continue;
+        }
+        if (c == 'f' || c == 'd' || c == 'n') {
+            size_t sz = (c == 'f') ? 4 : 8;
+            st.off = align_next(st.off, st.maxalign ? (sz < (size_t)st.maxalign ? sz : (size_t)st.maxalign) : 1);
+            if (st.off + sz > slen) { failed = 1; break; }
+            double dv;
+            if (sz == 4) {
+                float fv; memcpy(&fv, src + st.off, 4);
+                if (!st.little) { unsigned char q[4]; memcpy(q, src + st.off, 4); for (int k = 0; k < 2; k++) { unsigned char t = q[k]; q[k] = q[3-k]; q[3-k] = t; } memcpy(&fv, q, 4); }
+                dv = fv;
+            } else {
+                double qv; memcpy(&qv, src + st.off, 8);
+                if (!st.little) { unsigned char q[8]; memcpy(q, src + st.off, 8); for (int k = 0; k < 4; k++) { unsigned char t = q[k]; q[k] = q[7-k]; q[7-k] = t; } memcpy(&qv, q, 8); }
+                dv = qv;
+            }
+            st.off += sz;
+            out[no++] = wb_lv_number(dv);
+            continue;
+        }
+        if (c == 'z') {
+            if (st.off >= slen) { failed = 1; break; }
+            const unsigned char *end = (const unsigned char *)memchr(src + st.off, 0, slen - st.off);
+            if (!end) { failed = 1; break; }
+            size_t l = (size_t)(end - (src + st.off));
+            out[no++] = wb_lv_strl(wb_lv_intern(L, (const char *)src + st.off, l), l);
+            st.off += l + 1;
+            continue;
+        }
+        if (c == 'c') {
+            size_t sz = read_size_arg(&f, fe); if (!sz) sz = 1;
+            if (st.off + sz > slen) { failed = 1; break; }
+            out[no++] = wb_lv_strl(wb_lv_intern(L, (const char *)src + st.off, sz), sz);
+            st.off += sz;
+            continue;
+        }
+        if (c == 's') {
+            size_t pfb = read_size_arg(&f, fe); if (!pfb) pfb = sizeof(size_t);
+            if (pfb > sizeof(size_t)) pfb = sizeof(size_t);
+            if (st.off + pfb > slen) { failed = 1; break; }
+            uint64_t l = getint(src + st.off, pfb, st.little);
+            st.off += pfb;
+            if (st.off + (size_t)l > slen) { failed = 1; break; }
+            out[no++] = wb_lv_strl(wb_lv_intern(L, (const char *)src + st.off, (size_t)l), (size_t)l);
+            st.off += (size_t)l;
+            continue;
+        }
+        failed = 1;
+    }
+    out[no++] = wb_lv_integer((int64_t)st.off + 1);   /* next read position */
+    return wb_lv_multi_value(L, out, no);
+}
+
+static wb_lv_value s_packsize(wb_lv *L, wb_lv_value *a, int n) {
+    if (n < 1 || a[0].t != WB_LV_STR) { wb_lv_error(L, "bad argument #1 to 'packsize'"); return wb_lv_nil(); }
+    const char *f = a[0].as.s; const char *fe = f + a[0].slen;
+    pstate st; st.off = 0; st.little = 1; st.maxalign = 0; st.err = 0;
+    while (f < fe) {
+        char c = *f++;
+        if (c == ' ' || c == '\t' || c == '\n') continue;
+        size_t optarg = 0;
+        size_t sz;
+        if (c == '<' || c == '>' || c == '=') { little_skip: st.little = (c != '>') ? 1 : 0; continue; }
+        if (c == '!') { st.maxalign = (int)read_size_arg(&f, fe); continue; }
+        if (c == 'x') { st.off++; continue; }
+        if (c == 'z' || c == 's') { wb_lv_error(L, "variable-length format to 'packsize'"); return wb_lv_nil(); }
+        sz = 0;
+        switch (c) {
+        case 'b': case 'B': sz = 1; break;
+        case 'h': case 'H': sz = 2; break;
+        case 'l': case 'L': sz = 4; break;
+        case 'j': case 'J': case 'T': sz = sizeof(int64_t); break;
+        case 'i': case 'I': sz = read_size_arg(&f, fe); if (!sz) sz = 4; break;
+        case 'f': sz = 4; break;
+        case 'd': case 'n': sz = 8; break;
+        case 'c': sz = read_size_arg(&f, fe); if (!sz) sz = 1; break;
+        default: wb_lv_error(L, "invalid format option '%c' to 'packsize'", c); return wb_lv_nil();
+        }
+        if (c == 'i' || c == 'I' || c == 'b' || c == 'B' || c == 'h' || c == 'H' || c == 'l' || c == 'L' ||
+            c == 'j' || c == 'J' || c == 'T' || c == 'f' || c == 'd' || c == 'n')
+            st.off = align_next(st.off, st.maxalign ? (sz < (size_t)st.maxalign ? sz : (size_t)st.maxalign) : 1);
+        st.off += sz;
+    }
+    return wb_lv_integer((int64_t)st.off);
+}
+
 /* --------------------------------------------------------- registration */
 
 static wb_lv_value cfn_len(wb_lv *L, wb_lv_value *a, int n, void *ud) { (void)ud; return s_len(L, a, n); }
@@ -724,6 +998,9 @@ static wb_lv_value cfn_find(wb_lv *L, wb_lv_value *a, int n, void *ud) { (void)u
 static wb_lv_value cfn_match(wb_lv *L, wb_lv_value *a, int n, void *ud) { (void)ud; return s_match(L, a, n); }
 static wb_lv_value cfn_gmatch(wb_lv *L, wb_lv_value *a, int n, void *ud) { (void)ud; return s_gmatch(L, a, n); }
 static wb_lv_value cfn_gsub(wb_lv *L, wb_lv_value *a, int n, void *ud) { (void)ud; return s_gsub(L, a, n); }
+static wb_lv_value cfn_pack(wb_lv *L, wb_lv_value *a, int n, void *ud) { (void)ud; return s_pack(L, a, n); }
+static wb_lv_value cfn_unpack(wb_lv *L, wb_lv_value *a, int n, void *ud) { (void)ud; return s_unpack(L, a, n); }
+static wb_lv_value cfn_packsize(wb_lv *L, wb_lv_value *a, int n, void *ud) { (void)ud; return s_packsize(L, a, n); }
 
 void wb_lv_register_string(wb_lv *L) {
     wb_lv_table *t = wb_lv_table_new(L, 0, 16);
@@ -744,6 +1021,9 @@ void wb_lv_register_string(wb_lv *L) {
     S("match", cfn_match);
     S("gmatch", cfn_gmatch);
     S("gsub", cfn_gsub);
+    S("pack", cfn_pack);
+    S("unpack", cfn_unpack);
+    S("packsize", cfn_packsize);
 #undef S
 
     /* the string metatable: string lib functions are methods on strings */
