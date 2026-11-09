@@ -224,6 +224,9 @@ void wb_lv_register_table(wb_lv *L) {
 #undef T
     wb_lv_value tv; tv.t = WB_LV_TABLE; tv.as.tab = t;
     wb_lv_set_global(L, "table", tv);
+    /* deprecated global `unpack`, still used by Lua-5.4-era tests */
+    { wb_lv_value guv; guv.t = WB_LV_CFUNCTION; guv.as.cf.f = t_unpack; guv.as.cf.ud = NULL;
+      wb_lv_set_global(L, "unpack", guv); }
     /* 5.1 compat */
     wb_lv_value g; g.t = WB_LV_TABLE; g.as.tab = t;
     (void)g;

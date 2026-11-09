@@ -378,6 +378,91 @@ static wb_lv_value cfn_getmetatable(wb_lv *L, wb_lv_value *args, int n, void *ud
     return r;
 }
 
+static wb_lv_value cfn_require(wb_lv *L, wb_lv_value *args, int n, void *ud) {
+    (void)ud;
+    if (n < 1 || args[0].t != WB_LV_STR) { wb_lv_error(L, "bad argument #1 to 'require' (string expected)"); return wb_lv_nil(); }
+    const char *name = args[0].as.s;
+    /* preloaded library modules: require returns the standard global table */
+    static const char *mods[] = {"_G", "string", "table", "math", "os", "io",
+                                 "coroutine", "utf8", "debug", "package", NULL};
+    for (int i = 0; mods[i]; i++) {
+        if (!strcmp(name, mods[i])) {
+            wb_lv_value g = wb_lv_get_global(L, mods[i]);
+            if (g.t != WB_LV_NIL) return g;
+        }
+    }
+    wb_lv_error(L, "module '%s' not found", name);
+    return wb_lv_nil();
+}
+
+/* `package` table: package.loaded is preloaded with the stdlibs so a later,
+ * richer require has a cache to consult. */
+static wb_lv_value cfn_pkg_loadlib(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)a; (void)n; (void)ud;
+    return wb_lv_nil();
+}
+static wb_lv_value cfn_pkg_searchpath(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)a; (void)n; (void)ud;
+    return wb_lv_nil();
+}
+
+
+static char *lv_readfile(const char *path, size_t *n) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    char *b = (char *)malloc((size_t)sz + 1);
+    if (!b) { fclose(f); return NULL; }
+    size_t got = fread(b, 1, (size_t)sz, f);
+    b[got] = 0; fclose(f);
+    if (n) *n = got;
+    return b;
+}
+
+static wb_lv_value cfn_loadfile(wb_lv *L, wb_lv_value *args, int n, void *ud) {
+    (void)ud;
+    if (n < 1 || args[0].t != WB_LV_STR) { wb_lv_error(L, "bad argument #1 to 'loadfile' (string expected)"); return wb_lv_nil(); }
+    size_t len = 0;
+    char *src = lv_readfile(args[0].as.s, &len);
+    if (!src) {
+        wb_lv_value all[2]; all[0] = wb_lv_nil();
+        all[1] = wb_lv_strl(wb_lv_intern(L, "cannot open file", 16), 16);
+        return wb_lv_multi_value(L, all, 2);
+    }
+    if (!L->pool) L->pool = WB_LV_ALLOC(pool, L);
+    ex *root = NULL;
+    const char *err = wb_lv_parse_driver(L, src, L->pool, &root);
+    free(src);
+    if (err) {
+        wb_lv_value all[2]; all[0] = wb_lv_nil(); all[1] = wb_lv_str(err);
+        L->has_err = 0; L->err[0] = 0;
+        return wb_lv_multi_value(L, all, 2);
+    }
+    wb_lv_func *fn = WB_LV_ALLOC(wb_lv_func, L);
+    fn->body = root; fn->name = args[0].as.s; fn->defining = NULL;
+    fn->nparams = 0; fn->params = NULL;
+    wb_lv_value r; r.t = WB_LV_FUNCTION; r.as.fn = fn;
+    return r;
+}
+
+static wb_lv_value cfn_dofile(wb_lv *L, wb_lv_value *args, int n, void *ud) {
+    (void)ud;
+    wb_lv_value chunk = cfn_loadfile(L, args, n, ud);
+    if (L->has_err) return wb_lv_nil();
+    if (chunk.t != WB_LV_FUNCTION) {
+        /* load failed: error on the message */
+        const char *m = (chunk.t == WB_LV_MULTI && chunk.as.multi && chunk.as.multi->n >= 2)
+                        ? wb_lv_tostring_intern(L, chunk.as.multi->v[1]) : "cannot open file";
+        wb_lv_error(L, "%s", m);
+        wb_lv_value all[2]; all[0] = wb_lv_bool(0); all[1] = wb_lv_str(m);
+        return wb_lv_multi_value(L, all, 2);
+    }
+    wb_lv_value *out = NULL;
+    int nr = wb_lv_call_value(L, chunk, NULL, 0, &out);
+    if (L->has_err) return wb_lv_nil();
+    return wb_lv_multi_value(L, out, nr);
+}
+
 static wb_lv_value cfn_load(wb_lv *L, wb_lv_value *args, int n, void *ud) {
     (void)ud;
     if (n < 1) return wb_lv_nil();
@@ -464,7 +549,29 @@ void wb_lv_register_builtins(wb_lv *L) {
     wb_lv_register_global(L, "setmetatable", cfn_setmetatable, NULL);
     wb_lv_register_global(L, "getmetatable", cfn_getmetatable, NULL);
     wb_lv_register_global(L, "load", cfn_load, NULL);
-    wb_lv_register_global(L, "unpack", cfn_unimplemented, "unpack (use table.unpack)");
+    wb_lv_register_global(L, "require", cfn_require, NULL);
+
+    /* package table with a loaded cache bound to the (already-registered) libs */
+    {
+        wb_lv_value pkg;
+        pkg.t = WB_LV_TABLE; pkg.as.tab = wb_lv_table_new(L, 0, 4);
+        wb_lv_value loaded;
+        loaded.t = WB_LV_TABLE; loaded.as.tab = wb_lv_table_new(L, 0, 12);
+        static const char *mods[] = {"string","table","math","os","io","coroutine","utf8","debug","_G",NULL};
+        for (int i = 0; mods[i]; i++) {
+            wb_lv_value g = wb_lv_get_global(L, mods[i]);
+            if (g.t != WB_LV_NIL) wb_lv_table_set(L, loaded.as.tab, wb_lv_str(mods[i]), g);
+        }
+        wb_lv_table_set(L, pkg.as.tab, wb_lv_str("loaded"), loaded);
+        wb_lv_value v; v.t = WB_LV_CFUNCTION; v.as.cf.f = cfn_pkg_loadlib; v.as.cf.ud = NULL;
+        wb_lv_table_set(L, pkg.as.tab, wb_lv_str("loadlib"), v);
+        v.as.cf.f = cfn_pkg_searchpath;
+        wb_lv_table_set(L, pkg.as.tab, wb_lv_str("searchpath"), v);
+        wb_lv_table_set(L, pkg.as.tab, wb_lv_str("path"), wb_lv_str("?.lua"));
+        wb_lv_table_set(L, pkg.as.tab, wb_lv_str("cpath"), wb_lv_str(""));
+        wb_lv_value pv; pv.t = WB_LV_TABLE; pv.as.tab = pkg.as.tab;
+        wb_lv_set_global(L, "package", pv);
+    }
 
     /* _VERSION */
     wb_lv_set_global(L, "_VERSION", wb_lv_str("Lua 5.4"));
@@ -473,10 +580,14 @@ void wb_lv_register_builtins(wb_lv *L) {
     wb_lv_value g; g.t = WB_LV_TABLE; g.as.tab = L->globals;
     wb_lv_table_set(L, L->globals, wb_lv_str("_G"), g);
 
-    /* require / dofile / loadfile: stubs until a package system exists */
-    wb_lv_register_global(L, "require", cfn_unimplemented, "require");
-    wb_lv_register_global(L, "dofile", cfn_unimplemented, "dofile");
-    wb_lv_register_global(L, "loadfile", cfn_unimplemented, "loadfile");
+    /* dofile / loadfile: load and run a script from the real filesystem.
+     * require is registered for real above (a package table + preloaded libs). */
+    { /* loadfile -> a function the official tests call */
+        wb_lv_value lf; lf.t = WB_LV_CFUNCTION; lf.as.cf.f = cfn_loadfile; lf.as.cf.ud = NULL;
+        wb_lv_set_global(L, "loadfile", lf);
+        wb_lv_value df; df.t = WB_LV_CFUNCTION; df.as.cf.f = cfn_dofile; df.as.cf.ud = NULL;
+        wb_lv_set_global(L, "dofile", df);
+    }
 }
 
 void wb_lv_openlibs(wb_lv *L) {

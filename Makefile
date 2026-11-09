@@ -22,6 +22,7 @@ CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Isrc
 LDLIBS  ?= -lm
 
 LV_SRC  := $(wildcard src/wb_lv_*.c)
+LV_OBJS := $(patsubst src/%.c,src/%.o,$(LV_SRC))
 CORE    := wua_test.exe
 SCRIPT  := wua_script_test.exe
 
@@ -29,11 +30,16 @@ SCRIPT  := wua_script_test.exe
 
 all: test
 
-$(CORE): $(LV_SRC) tests/wb_lv_test.c
-	$(CC) $(CFLAGS) $(LV_SRC) tests/wb_lv_test.c -o $@ $(LDLIBS)
+# Each source compiles to its own object once, so an edit rebuilds exactly one
+# file and relinks (and a cold build needs no build/ mkdir). Link serially.
+src/%.o: src/%.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
-$(SCRIPT): $(LV_SRC) tests/wb_lv_script_test.c
-	$(CC) $(CFLAGS) $(LV_SRC) tests/wb_lv_script_test.c -o $@ $(LDLIBS)
+$(CORE): $(LV_OBJS) tests/wb_lv_test.c
+	$(CC) $(CFLAGS) $(LV_OBJS) tests/wb_lv_test.c -o $@ $(LDLIBS)
+
+$(SCRIPT): $(LV_OBJS) tests/wb_lv_script_test.c
+	$(CC) $(CFLAGS) $(LV_OBJS) tests/wb_lv_script_test.c -o $@ $(LDLIBS)
 
 test-core: $(CORE)
 	./$(CORE)
@@ -44,4 +50,4 @@ test-script: $(SCRIPT)
 test: test-core test-script
 
 clean:
-	rm -f $(CORE) $(SCRIPT)
+	rm -f $(CORE) $(SCRIPT) $(LV_OBJS)
