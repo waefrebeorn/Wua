@@ -58,6 +58,11 @@ test: test-core test-script
 fuzz:
 	python3 tests/fuzz_lua.py 100
 
+# stress docket: 11 tests/stress/*.lua under both interpreters, checking no
+# hang / no crash / identical stdout / determinism (see stress_runner.py)
+stress:
+	python3 tests/stress_runner.py
+
 # gauntlet: the deep differential corpus, one domain per interpreter build.
 # Mirrors WuBuNOS's own "run a big third-party corpus" gauntlet practice.
 gauntlet: test

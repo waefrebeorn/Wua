@@ -593,6 +593,56 @@ wb_lv_value wb_lv_eval_multi(wb_lv *L, ex *e, env *en, wb_lv_value **out, int *n
     return v;
 }
 
+/* Proper-tail-call: evaluate a call EXPRESSION's callee + arguments without
+ * invoking it, and record them as a pending tail call (L->tail). Only used for
+ * a single-value `return f(...)` in tail position; the enclosing frame's loop
+ * in wb_lv_call_lua_results consumes it and reuses its own depth, so deep tail
+ * recursion does not grow the C stack. N_METHOD prepends self, like a normal
+ * method call. Returns 1 on success (L->tail set), 0 on error (L->has_err). */
+static int wb_lv_eval_multi_tail(wb_lv *L, ex *e, env *en) {
+    wb_lv_value callee;
+    wb_lv_value *args = NULL; int na = 0, acap = 0;
+    if (e->t == N_METHOD) {
+        wb_lv_value self = eval(L, e->e1->e1, en);
+        if (L->has_err) return 0;
+        wb_lv_value key = (e->e1->e2 && e->e1->e2->t == N_STR)
+                              ? wb_lv_str(e->e1->e2->str) : wb_lv_nil();
+        callee = wb_lv_index(L, self, key);
+        if (L->has_err) { free(args); return 0; }
+        args = args_push(args, &na, &acap, self);          /* implicit self */
+        for (int i = 0; i < e->nlist; i++) {
+            if (i == e->nlist - 1) {
+                wb_lv_value *o2 = NULL; int n2 = 0;
+                wb_lv_eval_multi(L, e->list[i], en, &o2, &n2);
+                if (L->has_err) { free(args); return 0; }
+                for (int k = 0; k < n2; k++) args = args_push(args, &na, &acap, o2[k]);
+            } else {
+                wb_lv_value v = eval(L, e->list[i], en);
+                if (L->has_err) { free(args); return 0; }
+                args = args_push(args, &na, &acap, v);
+            }
+        }
+    } else {
+        callee = eval(L, e->e1, en);
+        if (L->has_err) { free(args); return 0; }
+        for (int i = 0; i < e->nlist; i++) {
+            if (i == e->nlist - 1) {
+                wb_lv_value *o2 = NULL; int n2 = 0;
+                wb_lv_eval_multi(L, e->list[i], en, &o2, &n2);
+                if (L->has_err) { free(args); return 0; }
+                for (int k = 0; k < n2; k++) args = args_push(args, &na, &acap, o2[k]);
+            } else {
+                wb_lv_value v = eval(L, e->list[i], en);
+                if (L->has_err) { free(args); return 0; }
+                args = args_push(args, &na, &acap, v);
+            }
+        }
+    }
+    L->tail_fn = callee; L->tail_args = args; L->tail_n = na;
+    L->tail = 1;
+    return 1;
+}
+
 static wb_lv_value eval_impl(wb_lv *L, ex *e, env *en) {
     if (!e) return wb_lv_nil();
     switch (e->t) {
@@ -732,7 +782,12 @@ static wb_lv_value eval_impl(wb_lv *L, ex *e, env *en) {
 /* ------------------------------------------------------- function calls */
 
 /* Run a Lua function body. Results are PUSHED onto the value stack (the
- * caller reads L->stk[base..sp) and rewinds); returns the result count. */
+ * caller reads L->stk[base..sp) and rewinds); returns the result count.
+ *
+ * Proper tail calls: a single-value `return f(...)` in this frame records a
+ * pending tail call (L->tail) instead of recursing, and the loop below runs
+ * the callee IN THE SAME frame -- same depth, same C frame -- so deep tail
+ * recursion never grows the stack. Non-tail calls still recurse normally. */
 int wb_lv_call_lua_results(wb_lv *L, wb_lv_func *fn, wb_lv_value *args, int nargs) { if (L->prof_on) L->prof.call++;
     if (L->depth >= WB_LV_MAX_CALL) {
         wb_lv_error(L, "call nesting too deep (limit %d)", WB_LV_MAX_CALL);
@@ -740,32 +795,71 @@ int wb_lv_call_lua_results(wb_lv *L, wb_lv_func *fn, wb_lv_value *args, int narg
     }
     L->depth++;
 
-    env *e = new_env(L, fn->defining);
-    if (!e) { L->depth--; wb_lv_error(L, "out of memory"); return 0; }
-    for (int i = 0; i < fn->nparams; i++)
-        env_set(L, e, fn->params[i], (i < nargs) ? args[i] : wb_lv_nil());
-
-    /* varargs: everything past the named parameters */
-    int nva = (nargs > fn->nparams) ? nargs - fn->nparams : 0;
-    wb_lv_value *va = NULL;
-    if (nva > 0) {
-        va = WB_LV_ALLOCN(wb_lv_value, nva, L);
-        memcpy(va, args + fn->nparams, (size_t)nva * sizeof(*va));
-    }
     wb_lv_value *save_va = L->va; int save_nva = L->nva;
-    L->va = va; L->nva = nva;
-
     int base = L->sp;
-    if (fn->body && fn->body->t == N_BLOCK) {
-        int wr = 0;
-        exec(L, fn->body, e, &wr);
-    }
-    int n = L->sp - base;
+    int n = 0;
+    wb_lv_value *pending = NULL;       /* malloc'd tail args, freed once bound */
 
-    L->va = save_va; L->nva = save_nva;
-    L->depth--;
-    env_pop(L);                     /* the call frame's scope is done        */
-    return n;
+    for (;;) {
+        env *e = new_env(L, fn->defining);
+        if (!e) {
+            free(pending);
+            L->va = save_va; L->nva = save_nva; L->depth--;
+            wb_lv_error(L, "out of memory"); return 0;
+        }
+        for (int i = 0; i < fn->nparams; i++)
+            env_set(L, e, fn->params[i], (i < nargs) ? args[i] : wb_lv_nil());
+
+        /* varargs: everything past the named parameters */
+        int nva = (nargs > fn->nparams) ? nargs - fn->nparams : 0;
+        wb_lv_value *va = NULL;
+        if (nva > 0) {
+            va = WB_LV_ALLOCN(wb_lv_value, nva, L);
+            memcpy(va, args + fn->nparams, (size_t)nva * sizeof(*va));
+        }
+        free(pending); pending = NULL;       /* this frame copied what it needed */
+        L->va = va; L->nva = nva;
+
+        int wr = 0;
+        if (fn->body && fn->body->t == N_BLOCK) exec(L, fn->body, e, &wr);
+
+        if (L->has_err) {
+            env_pop(L);
+            L->tail = 0; free(L->tail_args); L->tail_args = NULL;
+            L->va = save_va; L->nva = save_nva; L->depth--;
+            return 0;
+        }
+
+        if (L->tail) {
+            wb_lv_value tfn = L->tail_fn;
+            wb_lv_value *ta = L->tail_args; int tn = L->tail_n;
+            L->tail = 0; L->tail_args = NULL;
+            env_pop(L);       /* this frame's scope is done; reuse its depth */
+            if (tfn.t == WB_LV_FUNCTION) {
+                fn = tfn.as.fn; args = ta; nargs = tn;
+                pending = ta;
+                continue;     /* run the callee in this same flat frame */
+            }
+            /* C function / __call tail: an ordinary nested call */
+            {
+                wb_lv_value *out = NULL; int r = wb_lv_call_value(L, tfn, ta, tn, &out);
+                free(ta);
+                if (L->has_err) {
+                    L->va = save_va; L->nva = save_nva; L->depth--;
+                    return 0;
+                }
+                for (int i = 0; i < r; i++) stk_push(L, out[i]);
+                n = r;
+                L->va = save_va; L->nva = save_nva; L->depth--;
+                return n;
+            }
+        }
+
+        n = L->sp - base;
+        env_pop(L);                     /* the call frame's scope is done   */
+        L->va = save_va; L->nva = save_nva; L->depth--;
+        return n;
+    }
 }
 
 /* single-value contract used by the public wb_lv_call */
@@ -1058,6 +1152,21 @@ wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
         int n = e->nlist;
         ex **vals = e->list;
         if (n == 0) { *was_return = 1; L->curline = save; return wb_lv_nil(); }
+        /* proper tail call: a single-value return of a call in tail position,
+         * inside a function frame, becomes a pending tail call so the frame
+         * reuses its depth instead of recursing. (depth>0 means we are inside
+         * wb_lv_call_lua_results, which consumes the signal.) */
+        if (n == 1 && L->depth > 0 &&
+            (vals[0]->t == N_CALL || vals[0]->t == N_METHOD)) {
+            L->curline = save;
+            if (wb_lv_eval_multi_tail(L, vals[0], en)) {
+                *was_return = 1;
+                return wb_lv_nil();
+            }
+            if (L->has_err) { *was_return = 1; return wb_lv_nil(); }
+            L->curline = save;
+            /* not a tail candidate after all: continue below */
+        }
         /* push results onto the value stack */
         for (int i = 0; i < n - 1; i++) stk_push(L, eval(L, vals[i], en));
         wb_lv_value *out = NULL; int no = 0;

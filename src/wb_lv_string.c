@@ -644,17 +644,37 @@ static wb_lv_value s_gsub(wb_lv *L, wb_lv_value *a, int n) {
                         if (*r == '%') { if (len + 2 > cap) { cap = cap*2+32; buf = (char*)realloc(buf, cap); } buf[len++] = '%'; }
                         else if (isdigit((unsigned char)*r)) {
                             int ci = *r - '0';
-                            if (ci == 0) {
+                            if (ci == 0) {                       /* %0 = whole */
                                 size_t l = (size_t)(e - s);
                                 while (len + l + 1 > cap) { cap = cap*2+32; buf = (char*)realloc(buf, cap); }
                                 memcpy(buf + len, s, l); len += l;
                             } else {
-                                int li = check_capture(&ms, *r);
-                                if (li >= 0) {
-                                    size_t l = (size_t)ms.capture[li].len;
+                                /* Lua 5.4 get_onecapture: capture ci-1 if it
+                                 * exists; else %1 with NO captures is the WHOLE
+                                 * match, and any other out-of-range %n errors. */
+                                int li = ci - 1;
+                                if (li < ms.level) {
+                                    ptrdiff_t cl = ms.capture[li].len;
                                     const char *init = ms.capture[li].init;
+                                    if (cl == CAP_UNFINISHED) {
+                                        wb_lv_error(L, "unfinished capture"); goto gsub_done;
+                                    } else if (cl == CAP_POSITION) {
+                                        char pb[24];
+                                        int pl = snprintf(pb, sizeof pb, "%d",
+                                            (int)(init - ms.src_init) + 1);
+                                        while (len + (size_t)pl + 1 > cap) { cap = cap*2+32; buf = (char*)realloc(buf, cap); }
+                                        memcpy(buf + len, pb, (size_t)pl); len += (size_t)pl;
+                                    } else {
+                                        while (len + (size_t)cl + 1 > cap) { cap = cap*2+32; buf = (char*)realloc(buf, cap); }
+                                        memcpy(buf + len, init, (size_t)cl); len += (size_t)cl;
+                                    }
+                                } else if (li == 0) {
+                                    size_t l = (size_t)(e - s);       /* %1, no captures */
                                     while (len + l + 1 > cap) { cap = cap*2+32; buf = (char*)realloc(buf, cap); }
-                                    memcpy(buf + len, init, l); len += l;
+                                    memcpy(buf + len, s, l); len += l;
+                                } else {
+                                    wb_lv_error(L, "invalid capture index %%%d", ci);
+                                    goto gsub_done;
                                 }
                             }
                         }
@@ -711,8 +731,10 @@ static wb_lv_value s_gsub(wb_lv *L, wb_lv_value *a, int n) {
             }
             s++;
         }
+gsub_done:
         if (count >= maxn) break;
-    } while (s <= src + ls && !anchor);
+    } while (s <= src + ls && !anchor && !L->has_err);
+    if (L->has_err) { free(buf); return wb_lv_nil(); }   /* invalid capture etc. */
     if (s <= src + ls) {
         size_t rem = (size_t)(src + ls - s);
         while (len + rem + 1 > cap) { cap = cap*2+32; buf = (char*)realloc(buf, cap); }

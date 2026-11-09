@@ -98,6 +98,11 @@ wb_lv_value wb_lv_call(wb_lv *L, wb_lv_value fn, wb_lv_value *args, int nargs) {
 
 int wb_lv_pcall(wb_lv *L, wb_lv_value fn, wb_lv_value *args, int nargs,
                 wb_lv_value *out, int *nout) {
+    /* snapshot call/isolation state so a caught error unwinds cleanly: the
+     * longjmp below skips the normal depth-- / env_pop of every frame in
+     * between, which would otherwise LEAK +1 depth and a scope per caught
+     * error (error-heavy scripts then hit a false 'nesting too deep'). */
+    int sd = L->depth, sed = L->eval_depth, se = L->envtop;
     jmp_buf *jb = wb_lv_push_catch(L);
     if (!jb) { wb_lv_set_err(L, "out of memory"); return 1; }
     if (setjmp(*jb) == 0) {
@@ -106,6 +111,7 @@ int wb_lv_pcall(wb_lv *L, wb_lv_value fn, wb_lv_value *args, int nargs,
         *nout = nr;
         return 0;
     }
+    L->depth = sd; L->eval_depth = sed; L->envtop = se;   /* unwind state */
     wb_lv_pop_catch(L);
     *nout = 0;
     /* stash the message where the caller can find it */
@@ -226,6 +232,7 @@ static wb_lv_value cfn_error(wb_lv *L, wb_lv_value *args, int n, void *ud) {
 static wb_lv_value cfn_pcall(wb_lv *L, wb_lv_value *args, int n, void *ud) {
     (void)ud;
     if (n < 1) { wb_lv_error(L, "bad argument #1 to 'pcall' (value expected)"); return wb_lv_nil(); }
+    int sd = L->depth, sed = L->eval_depth, se = L->envtop;
     jmp_buf *jb = wb_lv_push_catch(L);
     if (!jb) { wb_lv_set_err(L, "out of memory"); return wb_lv_nil(); }
     if (setjmp(*jb) == 0) {
@@ -238,6 +245,7 @@ static wb_lv_value cfn_pcall(wb_lv *L, wb_lv_value *args, int n, void *ud) {
         for (int i = 0; i < nr; i++) all[i + 1] = out[i];
         return wb_lv_multi_value(L, all, nr + 1);
     }
+    L->depth = sd; L->eval_depth = sed; L->envtop = se;   /* unwind state */
     wb_lv_pop_catch(L);
     wb_lv_value msg = L->has_err_obj ? L->err_obj : wb_lv_str(L->err[0] ? L->err : "error");
     L->has_err = 0; L->err[0] = 0; L->has_err_obj = 0;
@@ -248,6 +256,7 @@ static wb_lv_value cfn_pcall(wb_lv *L, wb_lv_value *args, int n, void *ud) {
 static wb_lv_value cfn_xpcall(wb_lv *L, wb_lv_value *args, int n, void *ud) {
     (void)ud;
     if (n < 2) { wb_lv_error(L, "bad argument #2 to 'xpcall' (value expected)"); return wb_lv_nil(); }
+    int sd = L->depth, sed = L->eval_depth, se = L->envtop;
     jmp_buf *jb = wb_lv_push_catch(L);
     if (!jb) { wb_lv_set_err(L, "out of memory"); return wb_lv_nil(); }
     if (setjmp(*jb) == 0) {
@@ -259,6 +268,7 @@ static wb_lv_value cfn_xpcall(wb_lv *L, wb_lv_value *args, int n, void *ud) {
         for (int i = 0; i < nr; i++) all[i + 1] = out[i];
         return wb_lv_multi_value(L, all, nr + 1);
     }
+    L->depth = sd; L->eval_depth = sed; L->envtop = se;   /* unwind state */
     wb_lv_pop_catch(L);
     wb_lv_value msg = L->has_err_obj ? L->err_obj : wb_lv_str(L->err[0] ? L->err : "error");
     L->has_err = 0; L->err[0] = 0; L->has_err_obj = 0;

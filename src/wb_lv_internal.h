@@ -95,6 +95,12 @@ struct wb_lv {
     wb_lv_table **mtab; int mtab_n, mtab_cap;
     unsigned gc_epoch;                     /* mark/release generation        */
     struct env **envst; int envtop, envcap; /* active env scopes for the GC   */
+    /* proper-tail-call state: the loop in wb_lv_call_lua_results consumes a
+     * pending `return f(...)` instead of recursing, keeping the frame flat. */
+    int tail;                /* a tail call is pending                         */
+    wb_lv_value tail_fn;     /* the callee for that pending tail call         */
+    wb_lv_value *tail_args;  /* its malloc'd argument vector (freed by loop)   */
+    int tail_n;
     anode *arena_slab;                     /* current active slab (bump target) */
     size_t arena_bytes;                    /* bytes paid to the allocator          */
     size_t arena_used;                     /* bytes handed out (bumped)            */

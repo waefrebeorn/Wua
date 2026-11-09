@@ -196,8 +196,10 @@ int main(void) {
         check_rec(&r, "12");
     }
     {
-        /* unbounded script recursion used to eat the C stack */
-        CHECK(wb_lv_run(L, "function f(n) return f(n+1) end\nf(0)", "rec") != NULL,
+        /* unbounded NON-tail script recursion must report an error, not eat
+         * the C stack (tail recursion is legitimately an infinite loop --
+         * Lua's proper tail calls -- so the depth guard only fires here). */
+        CHECK(wb_lv_run(L, "function f(n) return 1 + f(n+1) end\nf(0)", "rec") != NULL,
               "unbounded script recursion reports an error");
     }
 
