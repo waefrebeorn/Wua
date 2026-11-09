@@ -20,7 +20,7 @@
  * any struct. (An intrusive arena that writes `next` into the block's first
  * field silently corrupts interners and tables.)
  */
-typedef struct anode { struct anode *next; } anode;
+typedef struct anode { struct anode *next; size_t used, cap; } anode;
 
 void *wb_lv_arena_alloc(wb_lv *L, size_t n);
 #define WB_LV_ALLOC(T, L)     ((T *)wb_lv_arena_alloc((L), sizeof(T)))
@@ -95,7 +95,14 @@ struct wb_lv {
     wb_lv_table **mtab; int mtab_n, mtab_cap;
     unsigned gc_epoch;                     /* mark/release generation        */
     struct env **envst; int envtop, envcap; /* active env scopes for the GC   */
-    size_t arena_bytes;                    /* bytes handed out by the arena     */
+    anode *arena_slab;                     /* current active slab (bump target) */
+    size_t arena_bytes;                    /* bytes paid to the allocator          */
+    size_t arena_used;                     /* bytes handed out (bumped)            */
+
+    /* optional counters; enabled when WB_LV_PROF is set (printed at free) */
+    int prof_on;                              /* 1 when WB_LV_PROF set      */
+    struct { long long eval, exec, envg, envs, newenv;
+             long long tg, ts, call, alloc; } prof;
 };
 
 /* --------------------------------------------------------- string pool */

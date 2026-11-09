@@ -32,9 +32,14 @@ wb_lv *wb_lv_new(void) {
     wb_lv *L = wb_lv_alloc();
     if (L) wb_lv_openlibs(L);
     return L;
+    L->prof_on = getenv("WB_LV_PROF") != NULL;
 }
 
 void wb_lv_free(wb_lv *L) {
+    if (L && getenv("WB_LV_PROF"))
+        fprintf(stderr, "[prof] eval=%lld exec=%lld envg=%lld envs=%lld newenv=%lld tg=%lld ts=%lld call=%lld alloc=%lld\n",
+                L->prof.eval, L->prof.exec, L->prof.envg, L->prof.envs,
+                L->prof.newenv, L->prof.tg, L->prof.ts, L->prof.call, L->prof.alloc);
     /* run any pending __gc finalizers before the arena is destroyed */
     if (L) {
         for (int i = L->mtab_n - 1; i >= 0; i--) {     /* newest first, like Lua */

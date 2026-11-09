@@ -56,12 +56,12 @@ void wb_lv_pop_catch(wb_lv *L) { if (L->njmp > 0) L->njmp--; }
 
 /* --------------------------------------------------------------- scopes */
 
-static void env_set(wb_lv *L, env *e, const char *name, wb_lv_value v) {
+static void env_set(wb_lv *L, env *e, const char *name, wb_lv_value v) { if (L->prof_on) L->prof.envs++;
     if (!e) return;
     wb_lv_table_set(L, e->t, wb_lv_str(name), v);
 }
 
-static wb_lv_value env_get(wb_lv *L, env *e, const char *name) {
+static wb_lv_value env_get(wb_lv *L, env *e, const char *name) { if (L->prof_on) L->prof.envg++;
     for (env *c = e; c; c = c->parent) {
         wb_lv_value r = wb_lv_table_get(L, c->t, wb_lv_str(name));
         if (r.t != WB_LV_NIL) return r;
@@ -91,7 +91,7 @@ static void env_push(wb_lv *L, env *e) {
     }
     L->envst[L->envtop++] = e;
 }
-static env *new_env(wb_lv *L, env *parent) {
+static env *new_env(wb_lv *L, env *parent) { if (L->prof_on) L->prof.newenv++;
     env *e = WB_LV_ALLOC(env, L);
     if (!e) return NULL;
     e->t = wb_lv_table_new(L, 0, 8);
@@ -455,6 +455,7 @@ static wb_lv_value exec(wb_lv *L, ex *e, env *en, int *was_return) {
 }
 
 static wb_lv_value eval(wb_lv *L, ex *e, env *en) {
+    if (L->prof_on) L->prof.eval++;
     if (!e) return wb_lv_nil();
     if (L->eval_depth >= WB_LV_MAX_EVAL_DEPTH) {
         wb_lv_error(L, "expression nested too deeply (limit %d)", WB_LV_MAX_EVAL_DEPTH);
@@ -732,7 +733,7 @@ static wb_lv_value eval_impl(wb_lv *L, ex *e, env *en) {
 
 /* Run a Lua function body. Results are PUSHED onto the value stack (the
  * caller reads L->stk[base..sp) and rewinds); returns the result count. */
-int wb_lv_call_lua_results(wb_lv *L, wb_lv_func *fn, wb_lv_value *args, int nargs) {
+int wb_lv_call_lua_results(wb_lv *L, wb_lv_func *fn, wb_lv_value *args, int nargs) { if (L->prof_on) L->prof.call++;
     if (L->depth >= WB_LV_MAX_CALL) {
         wb_lv_error(L, "call nesting too deep (limit %d)", WB_LV_MAX_CALL);
         return 0;
@@ -786,6 +787,7 @@ static int block_has_label(ex *b, const char *label) {
 }
 
 wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
+    if (L->prof_on) L->prof.exec++;
     *was_return = 0;
     if (!e) return wb_lv_nil();
     int save = L->curline;

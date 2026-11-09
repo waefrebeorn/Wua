@@ -81,6 +81,9 @@ const char *wb_lv_tostring_intern(wb_lv *L, wb_lv_value v) {
     case WB_LV_BOOL:  return wb_lv_intern(L, v.as.b ? "true" : "false", v.as.b ? 4 : 5);
     case WB_LV_INT:   snprintf(buf, sizeof buf, "%lld", (long long)v.as.i); return wb_lv_intern(L, buf, strlen(buf));
     case WB_LV_NUM:
+        if (isnan(v.as.n)) return wb_lv_intern(L, "nan", 3);
+        if (isinf(v.as.n)) return wb_lv_intern(L, v.as.n < 0 ? "-inf" : "inf",
+                                               v.as.n < 0 ? 4 : 3);
         snprintf(buf, sizeof buf, "%.14g", v.as.n);
         /* Lua renders integral floats with a trailing ".0" */
         if (!strpbrk(buf, ".eEnN")) strncat(buf, ".0", sizeof buf - strlen(buf) - 1);
@@ -101,6 +104,8 @@ const char *wb_lv_tostring(wb_lv_value v) {
     if (v.t == WB_LV_STR) return v.as.s;
     if (v.t == WB_LV_INT) { snprintf(fb, sizeof fb, "%lld", (long long)v.as.i); return fb; }
     if (v.t == WB_LV_NUM) {
+        if (isnan(v.as.n)) return "nan";
+        if (isinf(v.as.n)) return v.as.n < 0 ? "-inf" : "inf";
         snprintf(fb, sizeof fb, "%.14g", v.as.n);
         if (!strpbrk(fb, ".eEnN")) strncat(fb, ".0", sizeof fb - strlen(fb) - 1);
         return fb;
@@ -206,7 +211,7 @@ wb_lv_table *wb_lv_table_new(wb_lv *L, int narr, int nrec) {
 }
 
 void wb_lv_table_set(wb_lv *L, wb_lv_table *t, wb_lv_value k, wb_lv_value v) {
-    if (k.t == WB_LV_NIL) { wb_lv_error(L, "table index is nil (line %d)", L->curline); return; }
+    if (L->prof_on) L->prof.ts++; if (k.t == WB_LV_NIL) { wb_lv_error(L, "table index is nil (line %d)", L->curline); return; }
     if (k.t == WB_LV_NUM && isnan(k.as.n)) { wb_lv_error(L, "table index is NaN (line %d)", L->curline); return; }
     if (t->count * 2 >= t->cap) tgrow(L, t);
     wb_lv_kv *f = tfind(t, k);
@@ -227,7 +232,7 @@ void wb_lv_table_set(wb_lv *L, wb_lv_table *t, wb_lv_value k, wb_lv_value v) {
 }
 
 wb_lv_value wb_lv_table_get(wb_lv *L, const wb_lv_table *tt, wb_lv_value k) {
-    (void)L;
+    if (L->prof_on) L->prof.tg++;
     wb_lv_kv *f = tfind((wb_lv_table *)tt, k);
     return f ? f->v : wb_lv_nil();
 }
