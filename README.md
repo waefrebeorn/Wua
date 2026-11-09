@@ -42,22 +42,40 @@ bad script cannot take down the host. Runtime errors carry a line number.
   `rawequal`, `rawlen`, `setmetatable`, `getmetatable`, `load`,
   `collectgarbage`, `_G`, `_VERSION`
 - **string** — `len`, `sub`, `rep`, `upper`, `lower`, `reverse`, `byte`,
-  `char`, `format`, and a full Lua-pattern matcher: `find`, `match`, `gmatch`,
-  `gsub` (classes, sets, ranges, quantifiers `* + - ?`, anchors, captures,
-  position captures, back-references, `%b`, `%f`)
+  `char`, `format`, `pack`, `unpack`, `packsize`, and a full Lua-pattern
+  matcher: `find`, `match`, `gmatch`, `gsub` (classes, sets, ranges,
+  quantifiers `* + - ?`, anchors, captures, position captures,
+  back-references, `%b`, `%f`)
 - **table** — `insert`, `remove`, `concat`, `sort` (with a comparator),
-  `unpack`, `pack`
+  `unpack`, `pack`, `move`
 - **math** — `floor`, `ceil`, `abs`, `sqrt`, `max`, `min`, `fmod`, `modf`,
-  `tointeger`, `type`, `ult`, `random`, `randomseed`, `pow`, `log`, the
-  transcendentals, `pi`, `huge`, `maxinteger`, `mininteger`
+  `tointeger`, `type`, `ult`, `random`, `randomseed`, `pow`, `log`, `log10`,
+  `exp`, the trig family, `deg`, `rad`, `pi`, `huge`, `maxinteger`,
+  `mininteger`
 - **os** — `time`, `clock`, `date`, `getenv`, `exit`, `remove`, `rename`,
-  `tmpname`
-- **io** — `write`, `read`
+  `tmpname`, `execute`, `difftime`, `setlocale`
+- **io** — `write`, `read`, `open`, `lines`, `input`, `output`, `close`,
+  `type`, `popen`, `tmpfile`, `stdin`, `stdout`, `stderr`
+- **coroutine** — `create`, `resume`, `yield`, `status`, `running`,
+  `isyieldable`, `wrap` (Windows fibers)
+- **utf8** — `len`, `char`, `codepoint`, `offset`, `codes`
+- **debug** — `traceback`, `getinfo`, `getlocal`, `sethook`, `gethook`,
+  `getmetatable`, `setmetatable`, `getupvalue`, `upvalueid`, `upvaluejoin`,
+  `getregistry`
+
+**Strings are length-aware**: embedded NUL bytes survive literals, the
+library, `string.format %s`, pattern matching, concatenation, comparison
+and `#`. Binary data works.
+
+**Finalizers**: tables with a `__gc` metamethod are reclaimed by a
+conservative mark/sweep on `collectgarbage("collect")` and at state close,
+newest-first in Lua's order. Reachable objects are never finalized.
 
 ## Not implemented
 
-Coroutines (need a separate execution model), the `utf8` library, the `debug`
-library, `string.pack`/`packsize`, the C API, and a package/`require` system.
+The C API (`lua_State`-style embedding surface) and a package/`require`
+system. Everything language- and library-level is covered; the differential
+probe against the reference interpreter shows no non-random divergences.
 
 ## Build and test
 
@@ -87,10 +105,11 @@ src/wb_lv_arena.c      the non-intrusive arena
 src/wb_lv_value.c      values, interning, tables, metatables
 src/wb_lv_lex.c        the lexer
 src/wb_lv_parse.c      the parser + AST pool
-src/wb_lv_eval.c       the evaluator, operators, calls
+src/wb_lv_eval.c       the evaluator, operators, calls, GC mark/sweep
 src/wb_lv_host.c       state lifecycle + the base library
-src/wb_lv_string.c     the string library + Lua patterns
+src/wb_lv_string.c     the string library + Lua patterns + pack/unpack
 src/wb_lv_stdlib.c     table / math / os / io
+src/wb_lv_coro.c       coroutines (Windows fibers)
 tests/                 the two gates
 docs/slerm-lua-gaps.md the measured Lua 5.4 gap list
 ```
