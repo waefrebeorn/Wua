@@ -114,9 +114,19 @@ int wb_lv_pcall(wb_lv *L, wb_lv_value fn, wb_lv_value *args, int nargs,
     L->depth = sd; L->eval_depth = sed; L->envtop = se;   /* unwind state */
     wb_lv_pop_catch(L);
     *nout = 0;
-    /* stash the message where the caller can find it */
-    wb_lv_set_global(L, "__lv_last_error", wb_lv_str(L->err));
-    L->has_err = 0; L->err[0] = 0;
+    /* Stash the message where the caller can find it. Prefer the raised VALUE
+     * (error(obj) raises the object, exactly as in Lua). Otherwise intern the
+     * stringified buffer: wb_lv_str(L->err) would alias that buffer, and the
+     * clear below would leave __lv_last_error reading as "". */
+    if (L->has_err_obj) {
+        wb_lv_set_global(L, "__lv_last_error", L->err_obj);
+    } else {
+        size_t mlen = strlen(L->err);
+        const char *msg = wb_lv_intern(L, L->err, mlen);
+        if (!msg || !*msg) { msg = ""; mlen = 0; }
+        wb_lv_set_global(L, "__lv_last_error", wb_lv_strl(msg, mlen));
+    }
+    L->has_err = 0; L->err[0] = 0; L->has_err_obj = 0;
     return 1;
 }
 

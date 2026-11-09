@@ -239,6 +239,41 @@ int main(void) {
         CHECK(wb_lv_run(L, "string.gsub('a', '%a', {a=true})", "gsub8") != NULL,
               "a boolean table replacement raises");
     }
+    {
+        /* wb_lv_pcall stashed an EMPTY string: wb_lv_str(L->err) aliased the
+         * error buffer, which the very next statement cleared. */
+        wb_lv_run(L, "function boom() error('boom') end", "pcall1");
+        wb_lv_value fn = wb_lv_get_global(L, "boom");
+        wb_lv_value out[4]; int nout = -1;
+        CHECK(wb_lv_pcall(L, fn, NULL, 0, out, &nout) == 1,
+              "wb_lv_pcall reports a raised call");
+        CHECK(nout == 0, "a raised call returns no values");
+        wb_lv_value le = wb_lv_get_global(L, "__lv_last_error");
+        CHECK(le.t == WB_LV_STR, "__lv_last_error is a string");
+        CHECK(le.t == WB_LV_STR && le.slen == 4 && memcmp(le.as.s, "boom", 4) == 0,
+              "__lv_last_error carries the message, not an empty string");
+    }
+    {
+        /* a runtime error (no error object) must survive the same path */
+        wb_lv_run(L, "function boomnil() nope() end", "pcall2");
+        wb_lv_value fn = wb_lv_get_global(L, "boomnil");
+        wb_lv_value out[4]; int nout = -1;
+        CHECK(wb_lv_pcall(L, fn, NULL, 0, out, &nout) == 1,
+              "a runtime error is reported");
+        wb_lv_value le = wb_lv_get_global(L, "__lv_last_error");
+        CHECK(le.t == WB_LV_STR && le.slen > 0,
+              "a runtime error's message survives");
+    }
+    {
+        /* error(obj) raises the object; the stash must not stringify it */
+        wb_lv_run(L, "function boomobj() error({code=5}) end", "pcall3");
+        wb_lv_value fn = wb_lv_get_global(L, "boomobj");
+        wb_lv_value out[4]; int nout = -1;
+        CHECK(wb_lv_pcall(L, fn, NULL, 0, out, &nout) == 1,
+              "error(obj) is reported");
+        wb_lv_value le = wb_lv_get_global(L, "__lv_last_error");
+        CHECK(le.t == WB_LV_TABLE, "error(obj) stashes the original object");
+    }
 
     wb_lv_free(L);
     printf("\n=== LV TESTS: %d pass, %d fail ===\n", g_pass, g_fail);
