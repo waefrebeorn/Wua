@@ -34,6 +34,18 @@ void wb_lv_error(wb_lv *L, const char *fmt, ...) {
     if (L->njmp > 0) longjmp(L->jmp[L->njmp - 1], 1);
 }
 
+/* Raise a VALUE, as error(obj) does: Lua returns the original object, not a
+ * stringified copy. */
+void wb_lv_error_value(wb_lv *L, wb_lv_value v) {
+    if (!L->has_err) {
+        L->has_err = 1;
+        L->err_obj = v;
+        L->has_err_obj = 1;
+        snprintf(L->err, sizeof L->err, "%s", wb_lv_tostring_intern(L, v));
+    }
+    if (L->njmp > 0) longjmp(L->jmp[L->njmp - 1], 1);
+}
+
 jmp_buf *wb_lv_push_catch(wb_lv *L) {
     jmp_buf *n = (jmp_buf *)realloc(L->jmp, (size_t)(L->njmp + 1) * sizeof(jmp_buf));
     if (!n) return NULL;
@@ -60,7 +72,12 @@ static wb_lv_value env_get(wb_lv *L, env *e, const char *name) {
 static void env_assign(wb_lv *L, env *e, const char *name, wb_lv_value v) {
     for (env *c = e; c; c = c->parent) {
         wb_lv_value r = wb_lv_table_get(L, c->t, wb_lv_str(name));
-        if (r.t != WB_LV_NIL) { env_set(L, c, name, v); return; }
+        if (r.t != WB_LV_NIL) {
+            if (c->consts && wb_lv_table_get(L, c->consts, wb_lv_str(name)).t != WB_LV_NIL)
+                wb_lv_error(L, "attempt to assign to a const variable '%s' (line %d)", name, L->curline);
+            env_set(L, c, name, v);
+            return;
+        }
     }
     wb_lv_table_set(L, L->globals, wb_lv_str(name), v);
 }
@@ -69,6 +86,7 @@ static env *new_env(wb_lv *L, env *parent) {
     env *e = WB_LV_ALLOC(env, L);
     if (!e) return NULL;
     e->t = wb_lv_table_new(L, 0, 8);
+    e->consts = wb_lv_table_new(L, 0, 4);
     e->parent = parent;
     return e;
 }
@@ -291,6 +309,19 @@ wb_lv_value wb_lv_compare(wb_lv *L, int op, wb_lv_value a, wb_lv_value b) {
         wb_lv_value r = call_meta(L, f, x, y);
         return wb_lv_bool(wb_lv_truthy(r));
     }
+    /* Lua 5.4: __le may be derived from __lt as `not (b < a)`. */
+    if (op == T_LE || op == T_GE) {
+        wb_lv_value x2 = a, y2 = b;
+        if (op == T_GE) { x2 = b; y2 = a; }
+        wb_lv_table *mx2 = wb_lv_getmetatable(L, x2);
+        wb_lv_table *my2 = wb_lv_getmetatable(L, y2);
+        wb_lv_value f2 = mx2 ? wb_lv_table_get(L, mx2, wb_lv_str("__lt")) : wb_lv_nil();
+        if (f2.t == WB_LV_NIL && my2) f2 = wb_lv_table_get(L, my2, wb_lv_str("__lt"));
+        if (f2.t == WB_LV_FUNCTION || f2.t == WB_LV_CFUNCTION) {
+            wb_lv_value r = call_meta(L, f2, x2, y2);
+            return wb_lv_bool(!wb_lv_truthy(r));
+        }
+    }
     wb_lv_error(L, "attempt to compare %s with %s (line %d)",
                 wb_lv_type_name(a.t), wb_lv_type_name(b.t), L->curline);
     return wb_lv_nil();
@@ -355,20 +386,14 @@ wb_lv_value wb_lv_index(wb_lv *L, wb_lv_value obj, wb_lv_value key) {
             obj = h;                     /* __index is a table: repeat */
             continue;
         }
-        if (obj.t == WB_LV_STR) {
-            /* string methods live on the string metatable */
-            wb_lv_table *m = L->string_meta;
-            if (m) {
-                wb_lv_value v = wb_lv_table_get(L, m, key);
-                if (v.t != WB_LV_NIL) return v;
-            }
-            wb_lv_error(L, "attempt to index a string value (line %d)", L->curline);
-            return wb_lv_nil();
-        }
-        wb_lv_table *m = wb_lv_getmetatable(L, obj);
+        /* every type with a metatable -- including strings -- resolves __index */
+        wb_lv_table *m = (obj.t == WB_LV_STR) ? L->string_meta : wb_lv_getmetatable(L, obj);
         if (m) {
             wb_lv_value h = wb_lv_table_get(L, m, wb_lv_str("__index"));
-            if (h.t == WB_LV_FUNCTION || h.t == WB_LV_CFUNCTION) {
+            if (h.t == WB_LV_TABLE) {
+                wb_lv_value v = wb_lv_table_get(L, h.as.tab, key);
+                if (v.t != WB_LV_NIL) return v;
+            } else if (h.t == WB_LV_FUNCTION || h.t == WB_LV_CFUNCTION) {
                 wb_lv_value args[2]; args[0] = obj; args[1] = key;
                 return wb_lv_call(L, h, args, 2);
             }
@@ -760,7 +785,7 @@ wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
                 /* A goto whose label is in THIS block jumps; anything else
                  * (a break, or a goto to an outer block) propagates. */
                 if (L->goto_label && block_has_label(e, L->goto_label)) {
-                    int j = i + 1;
+                    int j = 0;                        /* backward jumps included */
                     for (; j < n; j++)
                         if (e->list[j] && e->list[j]->t == N_LABEL &&
                             !strcmp(e->list[j]->label, L->goto_label)) break;
@@ -794,31 +819,50 @@ wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
         wb_lv_eval_multi(L, vals[nvals - 1], en, &out, &no);
         if (L->has_err) { L->curline = save; return wb_lv_nil(); }
         for (int i = 0; i < no && nt < 32; i++) tmp[nt++] = out[i];
-        for (int i = 0; i < nn; i++)
+        int *attrs = (int *)(intptr_t)e->e3;
+        for (int i = 0; i < nn; i++) {
             env_set(L, en, e->names[i], (i < nt) ? tmp[i] : wb_lv_nil());
+            if (attrs && (attrs[i] & 1) && en->consts)
+                wb_lv_table_set(L, en->consts, wb_lv_str(e->names[i]), wb_lv_bool(1));
+        }
         L->curline = save;
         return wb_lv_nil();
     }
     case N_ASSIGN: {
         int nt = e->nlist, nv = (int)(intptr_t)e->e4;
         ex **vals = (ex **)e->keys;
-        /* evaluate the right-hand side first */
-        wb_lv_value rhs[32];
-        int nr = 0;
-        for (int i = 0; i < nv - 1 && i < 32; i++) rhs[nr++] = eval(L, vals[i], en);
+        /* Evaluate every target's table+key FIRST: in `i, t[i] = 2, 99` the
+         * key t[i] must use the OLD i. */
+        int is_idx[32];
+        wb_lv_value objs[32], keys[32];
+        int bounded = (nt < 32) ? nt : 32;
+        for (int i = 0; i < bounded; i++) {
+            ex *t = e->list[i];
+            if (t->t == N_NAME) {
+                is_idx[i] = 0;
+            } else if (t->t == N_INDEX) {
+                is_idx[i] = 1;
+                objs[i] = eval(L, t->e1, en);
+                keys[i] = eval(L, t->e2, en);
+                if (L->has_err) { L->curline = save; return wb_lv_nil(); }
+            } else {
+                wb_lv_error(L, "invalid assignment target (line %d)", e->line);
+                L->curline = save; return wb_lv_nil();
+            }
+        }
+        wb_lv_value rhs[32]; int nr = 0;
+        for (int i = 0; i < nv - 1 && nr < 32; i++) {
+            rhs[nr++] = eval(L, vals[i], en);
+            if (L->has_err) { L->curline = save; return wb_lv_nil(); }
+        }
         wb_lv_value *out = NULL; int no = 0;
         if (nv > 0) wb_lv_eval_multi(L, vals[nv - 1], en, &out, &no);
+        if (L->has_err) { L->curline = save; return wb_lv_nil(); }
         for (int i = 0; i < no && nr < 32; i++) rhs[nr++] = out[i];
-
-        for (int i = 0; i < nt; i++) {
-            ex *t = e->list[i];
+        for (int i = 0; i < bounded; i++) {
             wb_lv_value v = (i < nr) ? rhs[i] : wb_lv_nil();
-            if (t->t == N_NAME) env_assign(L, en, t->name, v);
-            else if (t->t == N_INDEX) {
-                wb_lv_value obj = eval(L, t->e1, en);
-                wb_lv_value key = eval(L, t->e2, en);
-                if (!L->has_err) wb_lv_setindex(L, obj, key, v);
-            }
+            if (is_idx[i]) wb_lv_setindex(L, objs[i], keys[i], v);
+            else env_assign(L, en, e->list[i]->name, v);
             if (L->has_err) break;
         }
         L->curline = save;
@@ -906,26 +950,42 @@ wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
         wb_lv_value v2 = eval(L, e->e2, en);
         wb_lv_value v3 = e->e3 ? eval(L, e->e3, en) : wb_lv_integer(1);
         if (L->has_err) { L->curline = save; return wb_lv_nil(); }
-        int ok1, ok2, ok3;
-        double start = wb_lv_tonumber(v1, &ok1);
-        double stop  = wb_lv_tonumber(v2, &ok2);
-        double step  = wb_lv_tonumber(v3, &ok3);
-        if (!ok1 || !ok2 || !ok3) {
-            wb_lv_error(L, "'for' initial value must be a number (line %d)", e->line);
-            L->curline = save; return wb_lv_nil();
-        }
-        if (step == 0) { wb_lv_error(L, "'for' step is zero (line %d)", e->line); L->curline = save; return wb_lv_nil(); }
-        for (double i = start; (step > 0) ? (i <= stop) : (i >= stop); i += step) {
-            env *fe = new_env(L, en);
-            if (!fe) break;
-            env_set(L, fe, e->names[0], wb_lv_number(i));
-            int wr = 0;
-            wb_lv_value r = exec(L, e->e4, fe, &wr);
-            if (wr) { *was_return = 1; L->curline = save; return r; }
-            if (L->has_err) break;
-            if (L->has_goto) {
-                if (L->goto_label == NULL) L->has_goto = 0;   /* break */
-                break;
+        /* Lua 5.4: integer bounds (and step) give an integer control variable */
+        int allint = (v1.t == WB_LV_INT) && (v2.t == WB_LV_INT) &&
+                     (!e->e3 || v3.t == WB_LV_INT);
+        if (allint) {
+            int64_t i1 = v1.as.i, i2 = v2.as.i;
+            int64_t i3 = e->e3 ? v3.as.i : 1;
+            if (i3 == 0) { wb_lv_error(L, "'for' step is zero (line %d)", e->line); L->curline = save; return wb_lv_nil(); }
+            for (int64_t i = i1; (i3 > 0) ? (i <= i2) : (i >= i2); i += i3) {
+                env *fe = new_env(L, en);
+                if (!fe) break;
+                env_set(L, fe, e->names[0], wb_lv_integer(i));
+                int wr = 0;
+                wb_lv_value r = exec(L, e->e4, fe, &wr);
+                if (wr) { *was_return = 1; L->curline = save; return r; }
+                if (L->has_err) break;
+                if (L->has_goto) { if (L->goto_label == NULL) L->has_goto = 0; break; }
+            }
+        } else {
+            int ok1, ok2, ok3;
+            double start = wb_lv_tonumber(v1, &ok1);
+            double stop  = wb_lv_tonumber(v2, &ok2);
+            double step  = wb_lv_tonumber(v3, &ok3);
+            if (!ok1 || !ok2 || !ok3) {
+                wb_lv_error(L, "'for' initial value must be a number (line %d)", e->line);
+                L->curline = save; return wb_lv_nil();
+            }
+            if (step == 0) { wb_lv_error(L, "'for' step is zero (line %d)", e->line); L->curline = save; return wb_lv_nil(); }
+            for (double i = start; (step > 0) ? (i <= stop) : (i >= stop); i += step) {
+                env *fe = new_env(L, en);
+                if (!fe) break;
+                env_set(L, fe, e->names[0], wb_lv_number(i));
+                int wr = 0;
+                wb_lv_value r = exec(L, e->e4, fe, &wr);
+                if (wr) { *was_return = 1; L->curline = save; return r; }
+                if (L->has_err) break;
+                if (L->has_goto) { if (L->goto_label == NULL) L->has_goto = 0; break; }
             }
         }
         L->curline = save;

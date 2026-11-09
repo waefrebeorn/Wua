@@ -393,10 +393,27 @@ static wb_lv_value s_format(wb_lv *L, wb_lv_value *a, int n) {
         /* collect the spec */
         char spec[64]; int sp = 0; spec[sp++] = '%';
         while (i < fl && sp < 60 && strchr("-+ #0", fmt[i])) spec[sp++] = fmt[i++];
-        while (i < fl && sp < 60 && isdigit((unsigned char)fmt[i])) spec[sp++] = fmt[i++];
+        /* width: digits, or '*' meaning "take it from the next argument" */
+        while (i < fl && sp < 60 && (isdigit((unsigned char)fmt[i]) || fmt[i] == '*')) {
+            if (fmt[i] == '*') {
+                i++;
+                if (arg >= n) { free(buf); return wb_lv_nil(); }
+                int w = (int)wb_lv_tointeger(a[arg++], NULL);
+                char wb[24]; snprintf(wb, sizeof wb, "%d", w);
+                for (char *q = wb; *q && sp < 60; q++) spec[sp++] = *q;
+            } else spec[sp++] = fmt[i++];
+        }
         if (i < fl && fmt[i] == '.') {
             spec[sp++] = fmt[i++];
-            while (i < fl && sp < 60 && isdigit((unsigned char)fmt[i])) spec[sp++] = fmt[i++];
+            while (i < fl && sp < 60 && (isdigit((unsigned char)fmt[i]) || fmt[i] == '*')) {
+                if (fmt[i] == '*') {
+                    i++;
+                    if (arg >= n) { free(buf); return wb_lv_nil(); }
+                    int w = (int)wb_lv_tointeger(a[arg++], NULL);
+                    char wb[24]; snprintf(wb, sizeof wb, "%d", w);
+                    for (char *q = wb; *q && sp < 60; q++) spec[sp++] = *q;
+                } else spec[sp++] = fmt[i++];
+            }
         }
         char conv = (i < fl) ? fmt[i] : 0;
         if (sp < 62) spec[sp++] = conv;   /* the conversion char IS part of the spec */
@@ -429,7 +446,13 @@ static wb_lv_value s_format(wb_lv *L, wb_lv_value *a, int n) {
         }
         case 's': {
             if (arg >= n) { free(buf); return wb_lv_nil(); }
-            const char *s = wb_lv_tostring_intern(L, a[arg++]);
+            wb_lv_value sv = a[arg++];
+            wb_lv_table *sm = (sv.t == WB_LV_STR) ? L->string_meta : wb_lv_getmetatable(L, sv);
+            if (sm) {
+                wb_lv_value f = wb_lv_table_get(L, sm, wb_lv_str("__tostring"));
+                if (f.t == WB_LV_FUNCTION || f.t == WB_LV_CFUNCTION) sv = wb_lv_call(L, f, &a[arg-1], 1);
+            }
+            const char *s = wb_lv_tostring_intern(L, sv);
             if (strchr(spec, '.') || strlen(s) > 400) {
                 /* respect a precision if given, else print in full */
                 snprintf(tmp, sizeof tmp, spec, s);
@@ -610,12 +633,9 @@ static wb_lv_value s_gsub(wb_lv *L, wb_lv_value *a, int n) {
                     }
                 }
             } else if (a[2].t == WB_LV_TABLE) {
-                int li = check_capture(&ms, '1');
-                wb_lv_value key = (li >= 0 && ms.capture[li].len == CAP_POSITION)
-                                      ? wb_lv_integer(ms.capture[li].init - src + 1)
-                                      : wb_lv_str(wb_lv_intern(L, ms.capture[li >= 0 ? li : 0].init,
-                                                               (size_t)(li >= 0 ? ms.capture[li].len : 0)));
-                wb_lv_value rep = wb_lv_table_get(L, a[2].as.tab, key);
+                wb_lv_value caps[MAXCAPTURES];
+                int nc = push_captures(L, &ms, s, e, caps);
+                wb_lv_value rep = wb_lv_table_get(L, a[2].as.tab, caps[0]);
                 if (rep.t == WB_LV_STR) {
                     size_t l = strlen(rep.as.s);
                     while (len + l + 1 > cap) { cap = cap*2+32; buf = (char*)realloc(buf, cap); }

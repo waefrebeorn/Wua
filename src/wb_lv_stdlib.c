@@ -183,6 +183,34 @@ static wb_lv_value t_sort(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     return wb_lv_nil();
 }
 
+static wb_lv_value t_move(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    if (n < 3 || a[0].t != WB_LV_TABLE) { wb_lv_error(L, "bad argument #1 to 'move' (table expected)"); return wb_lv_nil(); }
+    int64_t f = check_int(L, a[1], "move", 2);
+    int64_t e = check_int(L, a[2], "move", 3);
+    int64_t t = (n >= 4) ? check_int(L, a[3], "move", 4) : f;
+    wb_lv_table *dst = (n >= 5 && a[4].t == WB_LV_TABLE) ? a[4].as.tab : a[0].as.tab;
+    if (e >= f) {
+        if (t > e || t <= f || dst != a[0].as.tab) {
+            for (int64_t i = 0; i <= e - f; i++) {
+                wb_lv_value k; k.t = WB_LV_INT; k.as.i = f + i;
+                wb_lv_value v = wb_lv_table_get(L, a[0].as.tab, k);
+                k.as.i = t + i;
+                wb_lv_table_set(L, dst, k, v);
+            }
+        } else {
+            for (int64_t i = e - f; i >= 0; i--) {
+                wb_lv_value k; k.t = WB_LV_INT; k.as.i = f + i;
+                wb_lv_value v = wb_lv_table_get(L, a[0].as.tab, k);
+                k.as.i = t + i;
+                wb_lv_table_set(L, dst, k, v);
+            }
+        }
+    }
+    if (n >= 5 && a[4].t == WB_LV_TABLE) return a[4];
+    return a[0];
+}
+
 void wb_lv_register_table(wb_lv *L) {
     wb_lv_table *t = wb_lv_table_new(L, 0, 8);
 #define T(name, fn) { wb_lv_value v; v.t = WB_LV_CFUNCTION; v.as.cf.f = fn; v.as.cf.ud = NULL; \
@@ -192,7 +220,7 @@ void wb_lv_register_table(wb_lv *L) {
     T("concat", t_concat);
     T("unpack", t_unpack);
     T("pack", t_pack);
-    T("sort", t_sort);
+    T("sort", t_sort); T("move", t_move);
 #undef T
     wb_lv_value tv; tv.t = WB_LV_TABLE; tv.as.tab = t;
     wb_lv_set_global(L, "table", tv);
@@ -308,22 +336,28 @@ static wb_lv_value m_ult(wb_lv *L, wb_lv_value *a, int n, void *ud) {
 static wb_lv_value m_random(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     (void)ud;
     /* xoshiro256** */
-    uint64_t *s = L->rand_state;
-    uint64_t result = (uint64_t)((s[0] + s[1]) & 0xFFFFFFFFFFFFFFFFULL);
-    result = (uint64_t)(((result * 5) & 0xFFFFFFFFFFFFFFFFULL) >> 7) * 9;
-    uint64_t t = (uint64_t)(s[1] << 17);
-    s[1] ^= s[0]; s[0] ^= t; s[0] = (s[0] << 45) | (s[0] >> 19);
-    (void)result;
-    uint64_t r = s[0] * 5;
+    uint64_t *st = L->rand_state;
+    uint64_t r = st[0] * 5;
+    r = ((r >> 7) * 5) * 9;
+    uint64_t t = (uint64_t)(st[1] << 17);
+    st[1] ^= st[0];
+    st[0] ^= t;
+    st[0] = (st[0] << 45) | (st[0] >> 19);
     r = ((r >> 7) * 9) & 0xFFFFFFFFFFFFFFFFULL;
+
     if (n == 0) return wb_lv_number((double)r / 18446744073709551616.0);
-    int64_t lo = (n >= 2) ? wb_lv_tointeger(a[1], NULL) : 1;
-    int64_t hi = (n >= 1) ? wb_lv_tointeger(a[0], NULL) : 1;
-    if (n >= 2) { lo = wb_lv_tointeger(a[1], NULL); hi = wb_lv_tointeger(a[0], NULL); }
+    /* math.random(m)      -> 1..m
+     * math.random(m, n)   -> m..n   (m is the LOWER bound) */
+    int ok1 = 0, ok2 = 0;
+    int64_t lo = wb_lv_tointeger(a[0], &ok1);
+    int64_t hi = lo;
+    if (n >= 2) { hi = wb_lv_tointeger(a[1], &ok2); if (!ok2) hi = lo; }
+    if (!ok1) { wb_lv_error(L, "bad argument to 'random' (number expected)"); return wb_lv_nil(); }
     if (lo > hi) { wb_lv_error(L, "bad argument to 'random' (interval is empty)"); return wb_lv_nil(); }
     uint64_t span = (uint64_t)(hi - lo) + 1;
     return wb_lv_integer(lo + (int64_t)(r % span));
 }
+
 static wb_lv_value m_randomseed(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     (void)ud;
     int64_t s = (n >= 1) ? wb_lv_tointeger(a[0], NULL) : 0;
@@ -435,6 +469,28 @@ static wb_lv_value o_tmpname(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     return wb_lv_str(wb_lv_intern(L, buf, strlen(buf)));
 }
 
+static wb_lv_value o_execute(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)ud;
+    if (n < 1 || a[0].t != WB_LV_STR) return wb_lv_nil();
+    int r = system(a[0].as.s);
+    wb_lv_value out[3];
+    out[0] = wb_lv_bool(r == 0);
+    out[1] = wb_lv_str(wb_lv_intern(L, "exit", 4));
+    out[2] = wb_lv_integer(r);
+    return wb_lv_multi_value(L, out, 3);
+}
+static wb_lv_value o_difftime(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)ud;
+    double t2 = (n >= 1) ? wb_lv_tonumber(a[0], NULL) : 0;
+    double t1 = (n >= 2) ? wb_lv_tonumber(a[1], NULL) : 0;
+    return wb_lv_number(t2 - t1);
+}
+static wb_lv_value o_setlocale(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    if (n < 1 || a[0].t == WB_LV_NIL) return wb_lv_str(wb_lv_intern(L, "C", 1));
+    return wb_lv_str(wb_lv_intern(L, "C", 1));
+}
+
 void wb_lv_register_os(wb_lv *L) {
     wb_lv_table *t = wb_lv_table_new(L, 0, 8);
 #define O(name, fn) { wb_lv_value v; v.t = WB_LV_CFUNCTION; v.as.cf.f = fn; v.as.cf.ud = NULL; \
@@ -442,6 +498,7 @@ void wb_lv_register_os(wb_lv *L) {
     O("time", o_time); O("clock", o_clock); O("date", o_date);
     O("getenv", o_getenv); O("exit", o_exit);
     O("remove", o_remove); O("rename", o_rename); O("tmpname", o_tmpname);
+    O("execute", o_execute); O("difftime", o_difftime); O("setlocale", o_setlocale);
 #undef O
     wb_lv_value tv; tv.t = WB_LV_TABLE; tv.as.tab = t;
     wb_lv_set_global(L, "os", tv);
@@ -483,6 +540,10 @@ static wb_lv_value i_open(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     wb_lv_table *t = wb_lv_table_new(L, 0, 4);
     wb_lv_table_set(L, t, wb_lv_str("f"), wb_lv_integer((int64_t)(intptr_t)f));
     wb_lv_table_set(L, t, wb_lv_str("closed"), wb_lv_bool(0));
+    /* the file metatable is registered by wb_lv_register_io; look it up as a
+     * global so the handle carries its methods */
+    wb_lv_value mt = wb_lv_get_global(L, "__file_meta");
+    if (mt.t == WB_LV_TABLE) wb_lv_setmetatable(L, t, mt.as.tab);
     wb_lv_value r; r.t = WB_LV_TABLE; r.as.tab = t;
     return r;
 }
@@ -596,11 +657,300 @@ static wb_lv_value i_read(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     return wb_lv_str(wb_lv_intern(L, buf, l));
 }
 
+static wb_lv_value i_input(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)a; (void)n; (void)ud;
+    return wb_lv_nil();   /* the default input handle */
+}
+static wb_lv_value i_output(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)a; (void)n; (void)ud;
+    return wb_lv_nil();   /* the default output handle */
+}
+static wb_lv_value i_close(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    if (n < 1 || a[0].t != WB_LV_TABLE) return wb_lv_nil();
+    FILE *f = get_file(L, a[0], 1);
+    if (!f) return wb_lv_nil();
+    fclose(f);
+    wb_lv_table_set(L, a[0].as.tab, wb_lv_str("closed"), wb_lv_bool(1));
+    return wb_lv_bool(1);
+}
+static wb_lv_value i_type(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    if (n < 1 || a[0].t != WB_LV_TABLE) return wb_lv_nil();
+    wb_lv_value f = wb_lv_table_get(L, a[0].as.tab, wb_lv_str("f"));
+    if (f.t != WB_LV_INT) return wb_lv_nil();
+    wb_lv_value closed = wb_lv_table_get(L, a[0].as.tab, wb_lv_str("closed"));
+    return wb_lv_str(wb_lv_intern(L, wb_lv_truthy(closed) ? "closed file" : "file", 5));
+}
+static wb_lv_value i_popen(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)a; (void)n; (void)ud;
+    return wb_lv_nil();
+}
+static wb_lv_value i_tmpfile(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)a; (void)n; (void)ud;
+    return wb_lv_nil();
+}
+
+/* ---------------------------------------------------------------- debug */
+
+static wb_lv_value d_traceback(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    const char *msg = (n >= 1 && a[0].t == WB_LV_STR) ? a[0].as.s : "";
+    char buf[1024];
+    snprintf(buf, sizeof buf, "%s\nstack traceback:\n", msg);
+    return wb_lv_str(wb_lv_intern(L, buf, strlen(buf)));
+}
+static wb_lv_value d_getinfo(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)a; (void)ud;
+    wb_lv_table *t = wb_lv_table_new(L, 0, 8);
+    wb_lv_table_set(L, t, wb_lv_str("currentline"), wb_lv_integer(L->curline));
+    wb_lv_table_set(L, t, wb_lv_str("source"), wb_lv_str(L->chunkname ? L->chunkname : "?"));
+    wb_lv_table_set(L, t, wb_lv_str("short_src"), wb_lv_str(L->chunkname ? L->chunkname : "?"));
+    wb_lv_table_set(L, t, wb_lv_str("what"), wb_lv_str("Lua"));
+    wb_lv_table_set(L, t, wb_lv_str("linedefined"), wb_lv_integer(0));
+    wb_lv_table_set(L, t, wb_lv_str("lastlinedefined"), wb_lv_integer(0));
+    wb_lv_value r; r.t = WB_LV_TABLE; r.as.tab = t;
+    return r;
+}
+static wb_lv_value d_getlocal(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)a; (void)n; (void)ud;
+    return wb_lv_nil();
+}
+static wb_lv_value d_sethook(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)a; (void)n; (void)ud;
+    return wb_lv_nil();
+}
+static wb_lv_value d_gethook(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)a; (void)n; (void)ud;
+    return wb_lv_bool(0);
+}
+static wb_lv_value d_getmetatable(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    if (n < 1) return wb_lv_nil();
+    wb_lv_table *m = (a[0].t == WB_LV_STR) ? L->string_meta : wb_lv_getmetatable(L, a[0]);
+    if (!m) return wb_lv_nil();
+    wb_lv_value r; r.t = WB_LV_TABLE; r.as.tab = m;
+    return r;
+}
+static wb_lv_value d_setmetatable(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    if (n >= 2 && a[0].t == WB_LV_TABLE) {
+        wb_lv_setmetatable(L, a[0].as.tab, (a[1].t == WB_LV_TABLE) ? a[1].as.tab : NULL);
+    }
+    return (n >= 1) ? a[0] : wb_lv_nil();
+}
+static wb_lv_value d_getupvalue(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)a; (void)n; (void)ud;
+    return wb_lv_nil();
+}
+static wb_lv_value d_upvalueid(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)a; (void)n; (void)ud;
+    return wb_lv_nil();
+}
+static wb_lv_value d_upvaluejoin(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)a; (void)n; (void)ud;
+    return wb_lv_nil();
+}
+static wb_lv_value d_getregistry(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)a; (void)n; (void)ud;
+    return wb_lv_nil();
+}
+static wb_lv_value d_traceback_noop(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)L; (void)a; (void)n; (void)ud;
+    return wb_lv_nil();
+}
+
+void wb_lv_register_debug(wb_lv *L) {
+    wb_lv_table *t = wb_lv_table_new(L, 0, 8);
+#define D(name, fn) { wb_lv_value v; v.t = WB_LV_CFUNCTION; v.as.cf.f = fn; v.as.cf.ud = NULL; \
+    wb_lv_table_set(L, t, wb_lv_str(name), v); }
+    D("traceback", d_traceback); D("getinfo", d_getinfo); D("getlocal", d_getlocal);
+    D("sethook", d_sethook); D("gethook", d_gethook);
+    D("getmetatable", d_getmetatable); D("setmetatable", d_setmetatable);
+    D("getupvalue", d_getupvalue); D("setupvalue", d_traceback_noop);
+    D("upvalueid", d_upvalueid); D("upvaluejoin", d_upvaluejoin);
+    D("getregistry", d_getregistry);
+#undef D
+    wb_lv_value tv; tv.t = WB_LV_TABLE; tv.as.tab = t;
+    wb_lv_set_global(L, "debug", tv);
+}
+
+/* ---------------------------------------------------------------- utf8 */
+
+/* Decode one UTF-8 sequence at s[i]; returns its length, or 0 for invalid. */
+static int utf8_decode(const unsigned char *s, size_t len, size_t i, long *cp) {
+    if (i >= len) return 0;
+    unsigned c = s[i];
+    if (c < 0x80) { *cp = c; return 1; }
+    if ((c & 0xE0) == 0xC0 && i + 1 < len) {
+        *cp = ((long)(c & 0x1F) << 6) | (s[i+1] & 0x3F);
+        return 2;
+    }
+    if ((c & 0xF0) == 0xE0 && i + 2 < len) {
+        *cp = ((long)(c & 0x0F) << 12) | ((long)(s[i+1] & 0x3F) << 6) | (s[i+2] & 0x3F);
+        return 3;
+    }
+    if ((c & 0xF8) == 0xF0 && i + 3 < len) {
+        *cp = ((long)(c & 0x07) << 18) | ((long)(s[i+1] & 0x3F) << 12) |
+              ((long)(s[i+2] & 0x3F) << 6) | (s[i+3] & 0x3F);
+        return 4;
+    }
+    return 0;
+}
+
+static wb_lv_value u_len(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    if (n < 1 || a[0].t != WB_LV_STR) return wb_lv_nil();
+    const unsigned char *s = (const unsigned char *)a[0].as.s;
+    size_t ls = strlen(a[0].as.s);
+    int64_t i = (n >= 2) ? wb_lv_tointeger(a[1], NULL) : 1;
+    int64_t j = (n >= 3) ? wb_lv_tointeger(a[2], NULL) : (int64_t)ls;
+    if (i < 1) i = 1;
+    if (j > (int64_t)ls) j = (int64_t)ls;
+    int64_t count = 0;
+    for (int64_t k = i - 1; k < j; ) {
+        long cp;
+        int l = utf8_decode(s, ls, (size_t)k, &cp);
+        if (l == 0) {
+            wb_lv_value out[2]; out[0] = wb_lv_nil(); out[1] = wb_lv_integer(k + 1);
+            return wb_lv_multi_value(L, out, 2);
+        }
+        k += l; count++;
+    }
+    return wb_lv_integer(count);
+}
+
+static wb_lv_value u_char(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    char buf[256]; int k = 0;
+    for (int i = 0; i < n && k < 250; i++) {
+        long cp = (long)wb_lv_tointeger(a[i], NULL);
+        if (cp < 0x80) buf[k++] = (char)cp;
+        else if (cp < 0x800) {
+            buf[k++] = (char)(0xC0 | (cp >> 6));
+            buf[k++] = (char)(0x80 | (cp & 0x3F));
+        } else if (cp < 0x10000) {
+            buf[k++] = (char)(0xE0 | (cp >> 12));
+            buf[k++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+            buf[k++] = (char)(0x80 | (cp & 0x3F));
+        } else {
+            buf[k++] = (char)(0xF0 | (cp >> 18));
+            buf[k++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+            buf[k++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+            buf[k++] = (char)(0x80 | (cp & 0x3F));
+        }
+    }
+    return wb_lv_str(wb_lv_intern(L, buf, (size_t)k));
+}
+
+static wb_lv_value u_codepoint(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    if (n < 1 || a[0].t != WB_LV_STR) return wb_lv_nil();
+    const unsigned char *s = (const unsigned char *)a[0].as.s;
+    size_t ls = strlen(a[0].as.s);
+    int64_t i = (n >= 2) ? wb_lv_tointeger(a[1], NULL) : 1;
+    int64_t j = (n >= 3) ? wb_lv_tointeger(a[2], NULL) : i;
+    if (i < 1) i = 1;
+    if (j > (int64_t)ls) j = (int64_t)ls;
+    int cnt = (int)(j - i + 1);
+    if (cnt <= 0) return wb_lv_nil();
+    if (cnt > 64) cnt = 64;
+    wb_lv_value *out = WB_LV_ALLOCN(wb_lv_value, cnt, L);
+    int k = 0;
+    for (int64_t p = i - 1; p < j && k < cnt; ) {
+        long cp;
+        int l = utf8_decode(s, ls, (size_t)p, &cp);
+        if (l == 0) break;
+        out[k++] = wb_lv_integer(cp);
+        p += l;
+    }
+    return wb_lv_multi_value(L, out, k);
+}
+
+static wb_lv_value u_offset(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    if (n < 2 || a[0].t != WB_LV_STR) return wb_lv_nil();
+    const unsigned char *s = (const unsigned char *)a[0].as.s;
+    size_t ls = strlen(a[0].as.s);
+    int64_t nreq = wb_lv_tointeger(a[1], NULL);
+    int64_t i = (n >= 3) ? wb_lv_tointeger(a[2], NULL) : (nreq >= 0 ? 1 : (int64_t)ls + 1);
+    if (i < 1) i = 1;
+    if (i > (int64_t)ls + 1) i = (int64_t)ls + 1;
+    if (nreq == 0) {
+        for (int64_t p = i - 1; p < (int64_t)ls; ) {
+            long cp; int l = utf8_decode(s, ls, (size_t)p, &cp);
+            if (l == 0) { p++; continue; }
+            if (p + 1 == i - 1) return wb_lv_integer(p + 1);
+            p += l;
+        }
+        return wb_lv_integer((int64_t)ls + 1);
+    }
+    int64_t count = 0;
+    for (int64_t p = i - 1; p < (int64_t)ls; ) {
+        long cp; int l = utf8_decode(s, ls, (size_t)p, &cp);
+        if (l == 0) return wb_lv_nil();
+        count++;
+        if (count == nreq) return wb_lv_integer(p + 1);
+        p += l;
+    }
+    return wb_lv_nil();
+}
+
+typedef struct { const char *s; size_t ls; int64_t pos; } ucodes_state;
+
+static wb_lv_value iter_ucodes(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)a; (void)n;
+    ucodes_state *st = (ucodes_state *)ud;
+    if (!st || st->pos >= (int64_t)st->ls) return wb_lv_nil();
+    long cp;
+    int l = utf8_decode((const unsigned char *)st->s, st->ls, (size_t)st->pos, &cp);
+    if (l == 0) { st->pos++; return iter_ucodes(L, a, n, ud); }
+    wb_lv_value out[2];
+    out[0] = wb_lv_integer(st->pos + 1);
+    out[1] = wb_lv_integer(cp);
+    st->pos += l;
+    return wb_lv_multi_value(L, out, 2);
+}
+
+static wb_lv_value u_codes(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    if (n < 1 || a[0].t != WB_LV_STR) return wb_lv_nil();
+    ucodes_state *st = (ucodes_state *)calloc(1, sizeof *st);
+    st->s = a[0].as.s; st->ls = strlen(a[0].as.s); st->pos = 0;
+    wb_lv_value it; it.t = WB_LV_CFUNCTION; it.as.cf.f = iter_ucodes; it.as.cf.ud = st;
+    return wb_lv_multi_value(L, (wb_lv_value[]){ it, a[0], wb_lv_integer(0) }, 3);
+}
+
+void wb_lv_register_utf8(wb_lv *L) {
+    wb_lv_table *t = wb_lv_table_new(L, 0, 8);
+#define U(name, fn) { wb_lv_value v; v.t = WB_LV_CFUNCTION; v.as.cf.f = fn; v.as.cf.ud = NULL; \
+    wb_lv_table_set(L, t, wb_lv_str(name), v); }
+    U("len", u_len); U("char", u_char); U("codepoint", u_codepoint);
+    U("offset", u_offset); U("codes", u_codes);
+#undef U
+    wb_lv_value tv; tv.t = WB_LV_TABLE; tv.as.tab = t;
+    wb_lv_set_global(L, "utf8", tv);
+}
+
 void wb_lv_register_io(wb_lv *L) {
     wb_lv_table *t = wb_lv_table_new(L, 0, 8);
 #define I(name, fn) { wb_lv_value v; v.t = WB_LV_CFUNCTION; v.as.cf.f = fn; v.as.cf.ud = NULL; \
     wb_lv_table_set(L, t, wb_lv_str(name), v); }
     I("write", i_write); I("read", i_read); I("open", i_open); I("lines", i_lines);
+    I("input", i_input); I("output", i_output); I("close", i_close);
+    I("type", i_type); I("popen", i_popen); I("tmpfile", i_tmpfile);
+    { wb_lv_value v; v.t = WB_LV_TABLE; v.as.tab = wb_lv_table_new(L,0,2);
+      wb_lv_table_set(L, v.as.tab, wb_lv_str("f"), wb_lv_integer((int64_t)(intptr_t)stdin));
+      wb_lv_table_set(L, v.as.tab, wb_lv_str("closed"), wb_lv_bool(0));
+      wb_lv_table_set(L, t, wb_lv_str("stdin"), v); }
+    { wb_lv_value v; v.t = WB_LV_TABLE; v.as.tab = wb_lv_table_new(L,0,2);
+      wb_lv_table_set(L, v.as.tab, wb_lv_str("f"), wb_lv_integer((int64_t)(intptr_t)stdout));
+      wb_lv_table_set(L, v.as.tab, wb_lv_str("closed"), wb_lv_bool(0));
+      wb_lv_table_set(L, t, wb_lv_str("stdout"), v); }
+    { wb_lv_value v; v.t = WB_LV_TABLE; v.as.tab = wb_lv_table_new(L,0,2);
+      wb_lv_table_set(L, v.as.tab, wb_lv_str("f"), wb_lv_integer((int64_t)(intptr_t)stderr));
+      wb_lv_table_set(L, v.as.tab, wb_lv_str("closed"), wb_lv_bool(0));
+      wb_lv_table_set(L, t, wb_lv_str("stderr"), v); }
 #undef I
     wb_lv_value tv; tv.t = WB_LV_TABLE; tv.as.tab = t;
     wb_lv_set_global(L, "io", tv);
@@ -614,4 +964,6 @@ void wb_lv_register_io(wb_lv *L) {
 #undef M
     wb_lv_value idx; idx.t = WB_LV_TABLE; idx.as.tab = fm;
     wb_lv_table_set(L, fm, wb_lv_str("__index"), idx);
+    wb_lv_value mv; mv.t = WB_LV_TABLE; mv.as.tab = fm;
+    wb_lv_set_global(L, "__file_meta", mv);
 }

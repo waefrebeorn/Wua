@@ -56,7 +56,7 @@ void wb_lv_set_global(wb_lv *L, const char *name, wb_lv_value v) {
 }
 
 const char *wb_lv_run(wb_lv *L, const char *src, const char *chunkname) {
-    L->has_err = 0; L->err[0] = 0;
+    L->has_err = 0; L->err[0] = 0; L->has_err_obj = 0;
     L->chunkname = chunkname ? chunkname : "?";
     L->curline = 1;
 
@@ -188,8 +188,8 @@ static wb_lv_value cfn_assert(wb_lv *L, wb_lv_value *args, int n, void *ud) {
 
 static wb_lv_value cfn_error(wb_lv *L, wb_lv_value *args, int n, void *ud) {
     (void)ud;
-    wb_lv_value m = (n >= 1) ? args[0] : wb_lv_nil();
-    wb_lv_error(L, "%s", wb_lv_tostring_intern(L, m));
+    /* error(obj) raises the ORIGINAL value; only the message is stringified */
+    wb_lv_error_value(L, (n >= 1) ? args[0] : wb_lv_nil());
     return wb_lv_nil();
 }
 
@@ -209,8 +209,8 @@ static wb_lv_value cfn_pcall(wb_lv *L, wb_lv_value *args, int n, void *ud) {
         return wb_lv_multi_value(L, all, nr + 1);
     }
     wb_lv_pop_catch(L);
-    wb_lv_value msg = wb_lv_str(L->err[0] ? L->err : "error");
-    L->has_err = 0; L->err[0] = 0;
+    wb_lv_value msg = L->has_err_obj ? L->err_obj : wb_lv_str(L->err[0] ? L->err : "error");
+    L->has_err = 0; L->err[0] = 0; L->has_err_obj = 0;
     wb_lv_value all[2]; all[0] = wb_lv_bool(0); all[1] = msg;
     return wb_lv_multi_value(L, all, 2);
 }
@@ -230,8 +230,8 @@ static wb_lv_value cfn_xpcall(wb_lv *L, wb_lv_value *args, int n, void *ud) {
         return wb_lv_multi_value(L, all, nr + 1);
     }
     wb_lv_pop_catch(L);
-    wb_lv_value msg = wb_lv_str(L->err[0] ? L->err : "error");
-    L->has_err = 0; L->err[0] = 0;
+    wb_lv_value msg = L->has_err_obj ? L->err_obj : wb_lv_str(L->err[0] ? L->err : "error");
+    L->has_err = 0; L->err[0] = 0; L->has_err_obj = 0;
     wb_lv_value hargs[1]; hargs[0] = msg;
     wb_lv_value h = wb_lv_call(L, args[1], hargs, 1);
     wb_lv_value all[2]; all[0] = wb_lv_bool(0); all[1] = h;
@@ -466,4 +466,6 @@ void wb_lv_openlibs(wb_lv *L) {
     wb_lv_register_math(L);
     wb_lv_register_os(L);
     wb_lv_register_io(L);
+    wb_lv_register_debug(L);
+    wb_lv_register_utf8(L);
 }

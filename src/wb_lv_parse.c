@@ -238,12 +238,12 @@ static ex *parse_prefix(parser *P) {
         e = parse_expr(P);
         if (P->err) return NULL;
         expect(P, ')', "')' expected");
-        /* parenthesised: truncates multiple results to one */
+        /* parenthesised: truncates multiple results to one -- but it is still
+         * a prefix expression, so .field / () / :method suffixes apply */
         ex *p = espawn(P->pl);
         if (p) { p->t = N_PAREN; p->e1 = e; p->line = line; }
-        return p ? p : e;
-    }
-    if (tok_is(P, T_NAME)) {
+        e = p ? p : e;
+    } else if (tok_is(P, T_NAME)) {
         e = espawn(P->pl);
         if (!e) { wb_lv_perr(P, "out of AST pool"); return NULL; }
         e->t = N_NAME; e->name = P->cur.str; e->line = line;
@@ -512,20 +512,25 @@ static ex *parse_stmt(parser *P) {
             return s;
         }
         const char **names = (const char **)wb_lv_arena_alloc(P->L, 8 * sizeof(char *));
+        int *attrs = (int *)wb_lv_arena_alloc(P->L, 8 * sizeof(int));
         int nn = 0;
         for (;;) {
             if (!tok_is(P, T_NAME)) { wb_lv_perr(P, "name expected"); break; }
-            if (nn < 8) names[nn++] = P->cur.str;
+            if (nn < 8) { names[nn] = P->cur.str; attrs[nn] = 0; nn++; }
             wb_lv_next_tok(P);
-            /* 5.4 attributes: <const> / <close> -- parsed and ignored */
+            /* 5.4 attributes: <const> is enforced; <close> is accepted */
             if (tok_is(P, '<')) {
                 wb_lv_next_tok(P);
-                if (tok_is(P, T_NAME)) wb_lv_next_tok(P);
+                if (tok_is(P, T_NAME)) {
+                    if (!strcmp(P->cur.str, "const")) attrs[nn - 1] |= 1;
+                    wb_lv_next_tok(P);
+                }
                 expect(P, '>', "'>' expected");
             }
             if (tok_is(P, ',')) { wb_lv_next_tok(P); continue; }
             break;
         }
+        s->e3 = (ex *)(intptr_t)attrs;   /* per-name attribute flags */
         s->t = N_LOCAL;
         s->names = names; s->nlist = nn;      /* name count lives in nlist */
         if (tok_is(P, '=')) {

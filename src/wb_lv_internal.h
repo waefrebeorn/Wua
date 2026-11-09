@@ -68,6 +68,8 @@ struct wb_lv {
     wb_lv_table *globals;
     wb_lv_table *string_meta;        /* metatable for the string type        */
     char err[512]; int has_err;
+    int has_err_obj;                /* error() raised a value, not a string */
+    wb_lv_value err_obj;
     int curline;                     /* line of the node being executed      */
     const char *chunkname;
     int depth;                       /* Lua call nesting (recursion guard)   */
@@ -129,6 +131,7 @@ typedef struct {
 
 void wb_lv_set_err(wb_lv *L, const char *fmt, ...);
 void wb_lv_error(wb_lv *L, const char *fmt, ...);   /* raises: longjmps or sets */
+void wb_lv_error_value(wb_lv *L, wb_lv_value v); /* raises a value, as error(obj) does */
 const char *wb_lv_type_name(wb_lv_type t);
 void wb_lv_next_tok(parser *P);
 void wb_lv_perr(parser *P, const char *msg);
@@ -140,7 +143,7 @@ const char *wb_lv_parse_driver(wb_lv *L, const char *src, pool *pl, ex **out);
 
 /* -------------------------------------------------------------- runtime */
 
-typedef struct env { struct env *parent; wb_lv_table *t; } env;
+typedef struct env { struct env *parent; wb_lv_table *t; wb_lv_table *consts; } env;
 
 struct wb_lv_func {
     ex *body;                  /* N_BLOCK                                    */
@@ -182,5 +185,7 @@ void wb_lv_register_table(wb_lv *L);
 void wb_lv_register_math(wb_lv *L);
 void wb_lv_register_os(wb_lv *L);
 void wb_lv_register_io(wb_lv *L);
+void wb_lv_register_debug(wb_lv *L);
+void wb_lv_register_utf8(wb_lv *L);
 
 #endif /* WB_LV_INTERNAL_H */
