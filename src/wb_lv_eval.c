@@ -271,7 +271,11 @@ wb_lv_value wb_lv_arith(wb_lv *L, int op, wb_lv_value a, wb_lv_value b) {
         return wb_lv_number(r);
     }
     case '%': {
-        double r = x - floor(x / y) * y;
+        /* Lua's luaV_modfloat: exact fmod, then correct the sign so the
+         * result has the divisor's sign. The naive `x - floor(x/y)*y`
+         * rounds twice and diverges from Lua by ~1 ulp. */
+        double r = fmod(x, y);
+        if (r != 0 && ((r < 0) != (y < 0))) r += y;
         return wb_lv_number(r);
     }
     }

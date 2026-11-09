@@ -3,3 +3,5 @@ build/
 *.exe
 wua_test.exe
 wua_script_test.exe
+__pycache__/
+*.pyc

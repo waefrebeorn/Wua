@@ -42,6 +42,7 @@ static ex *parse_primary(parser *P) {
     return e;
 }
 
+static ex *parse_bin(parser *P, int limit);   /* forward decl */
 static ex *parse_unary(parser *P) {
     static const int uni[] = { T_NOT, '#', '-', '~', 0 };
     for (int i = 0; uni[i]; i++) {
@@ -49,7 +50,10 @@ static ex *parse_unary(parser *P) {
             int op = P->cur.type;
             int line = P->cur.line;
             wb_lv_next_tok(P);
-            ex *operand = parse_unary(P);
+            /* unary binds LOOSER than ^ (Lua): `-2^2` -> -(2^2) = -4.
+             * The operand is parsed at limit 11 so ^ (12) binds inside it
+             * but * and friends (<=10) stay out. */
+            ex *operand = parse_bin(P, 11);
             if (P->err) return NULL;
             ex *e = espawn(P->pl);
             if (!e) { wb_lv_perr(P, "out of AST pool"); return NULL; }

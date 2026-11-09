@@ -244,11 +244,19 @@ size_t wb_lv_table_len(const wb_lv_table *tt) {
     wb_lv_table *t = (wb_lv_table *)tt;
     if (!t) return 0;
     if (!t->seq_dirty) return t->seq;
-    /* Lua's length: find a present-then-absent border by exponential scan,
-     * then a binary search between them. Even with holes this is the border
-     * Lua reports, so # on a sparse array matches the reference. */
+    /* Lua's length, with the CACHED length as the starting guess so a hole in
+     * the middle does not reset the result: in `s[#s+1]=..` x3 then
+     * `s[4]=nil`, Lua reports 6 (the border from its array-length hint), not 3
+     * (the first hole). Start from the previous length and expand upward;
+     * only fall back to scanning from 1 when the hint is stale or absent. */
     int64_t i = 0, j = 1;
-    while (ipres(t, j)) { i = j; j *= 2; }
+    int64_t hint = (int64_t)t->seq;
+    if (hint > 0 && ipres(t, hint)) {
+        i = hint; j = hint;
+        while (ipres(t, j)) { i = j; j = j * 2 + 1; }
+    } else {
+        while (ipres(t, j)) { i = j; j *= 2; }
+    }
     while (j - i > 1) {
         int64_t m = (i + j) / 2;
         if (ipres(t, m)) i = m; else j = m;
