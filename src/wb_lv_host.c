@@ -96,6 +96,12 @@ wb_lv_value wb_lv_call(wb_lv *L, wb_lv_value fn, wb_lv_value *args, int nargs) {
     return wb_lv_nil();
 }
 
+int wb_lv_call_multi(wb_lv *L, wb_lv_value fn, wb_lv_value *args, int nargs,
+                     wb_lv_value **out) {
+    if (!L) { if (out) *out = NULL; return 0; }
+    return wb_lv_call_value(L, fn, args, nargs, out);
+}
+
 int wb_lv_pcall(wb_lv *L, wb_lv_value fn, wb_lv_value *args, int nargs,
                 wb_lv_value *out, int *nout) {
     /* snapshot call/isolation state so a caught error unwinds cleanly: the

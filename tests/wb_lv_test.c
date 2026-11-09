@@ -43,6 +43,16 @@ static wb_lv_value cfn_boost(wb_lv *L, wb_lv_value *args, int n, void *ud) {
     return wb_lv_number(base * 10.0);
 }
 
+/* host func that returns SEVERAL values, as a Lua function would */
+static wb_lv_value cfn_three(wb_lv *L, wb_lv_value *args, int n, void *ud) {
+    (void)args; (void)n; (void)ud;
+    wb_lv_value v[3];
+    v[0] = wb_lv_integer(7);
+    v[1] = wb_lv_integer(8);
+    v[2] = wb_lv_integer(9);
+    return wb_lv_multi_value(L, v, 3);
+}
+
 /* assert the recorder captured 'expect' */
 static void check_rec(recorder *r, const char *expect) {
     CHECK(r->n == (int)strlen(expect) && strncmp(r->buf, expect, r->n) == 0,
@@ -57,6 +67,7 @@ int main(void) {
 
     /* 1+2: arithmetic, precedence (3 + 4 * 2 = 11), and print shows it via cfn */
     wb_lv_register_global(L, "echo", rec, &r);
+    wb_lv_register_global(L, "three_host", cfn_three, NULL);
     const char *p1 = wb_lv_run(L, "echo(3 + 4 * 2, '|', 10 - 2)\n", "t1");
     CHECK(p1 == NULL, "p1 ran without error");
     check_rec(&r, "11|8");
@@ -319,6 +330,50 @@ int main(void) {
         r.n = 0; r.buf[0] = 0;
         wb_lv_run(L, "local function g(...) local u = {...} return #u, u[1], u[2] end echo(g(4,5))", "tbl9");
         check_rec(&r, "245");
+    }
+    {
+        /* wb_lv_call_multi: every result, not just the first.  A host with
+         * only wb_lv_call has to route everything through wb_lv_pcall. */
+        wb_lv_run(L, "function three() return 1, 2, 3 end", "cm1");
+        wb_lv_value fn = wb_lv_get_global(L, "three");
+        wb_lv_value *out = NULL;
+        int n = wb_lv_call_multi(L, fn, NULL, 0, &out);
+        CHECK(n == 3, "a Lua function's multiple returns all come back");
+        CHECK(n == 3 && out && out[0].t == WB_LV_INT && out[0].as.i == 1 &&
+              out[1].as.i == 2 && out[2].as.i == 3,
+              "the values are 1, 2, 3 in order");
+
+        /* a host function returning a multi-value expands too */
+        wb_lv_value hf = wb_lv_get_global(L, "three_host");
+        out = NULL;
+        n = wb_lv_call_multi(L, hf, NULL, 0, &out);
+        CHECK(n == 3 && out && out[0].as.i == 7 && out[1].as.i == 8 &&
+              out[2].as.i == 9,
+              "a host function's multiple returns all come back");
+
+        /* a single return is still one value */
+        wb_lv_run(L, "function one() return 42 end", "cm2");
+        wb_lv_value fn1 = wb_lv_get_global(L, "one");
+        out = NULL;
+        n = wb_lv_call_multi(L, fn1, NULL, 0, &out);
+        CHECK(n == 1 && out && out[0].as.i == 42, "a single return is one value");
+
+        /* no return at all */
+        wb_lv_run(L, "function none() end", "cm3");
+        wb_lv_value fn0 = wb_lv_get_global(L, "none");
+        out = (wb_lv_value *)0x1;
+        n = wb_lv_call_multi(L, fn0, NULL, 0, &out);
+        CHECK(n == 0 && out == NULL, "a call with no returns yields nothing");
+
+        /* a call that raises yields nothing */
+        wb_lv_run(L, "function raises() error('nope') end", "cm4");
+        wb_lv_value fnr = wb_lv_get_global(L, "raises");
+        out = (wb_lv_value *)0x1;
+        n = wb_lv_call_multi(L, fnr, NULL, 0, &out);
+        CHECK(n == 0 && out == NULL, "a raising call yields no values");
+
+        /* clear the raised error so later checks start clean */
+        wb_lv_run(L, "x = 1", "cm5");
     }
 
     wb_lv_free(L);

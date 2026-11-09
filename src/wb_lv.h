@@ -58,6 +58,12 @@ int    wb_lv_truthy(wb_lv_value v);
 int    wb_lv_equal(wb_lv *L, wb_lv_value a, wb_lv_value b);
 int    wb_lv_rawequal(wb_lv_value a, wb_lv_value b);
 
+/* Bundle n values into ONE wb_lv_value, so a host function can return several
+ * values at once (Lua's multiple returns). n == 0 yields nil; n == 1 is the
+ * single value itself. The array is copied, so it may be on the caller's
+ * stack. */
+wb_lv_value wb_lv_multi_value(wb_lv *L, wb_lv_value *v, int n);
+
 /* --------------------------------------------------------------- state */
 wb_lv *wb_lv_new(void);          /* state + base library                        */
 wb_lv *wb_lv_alloc(void);        /* state only (tests / embedders)               */
@@ -89,8 +95,18 @@ void        wb_lv_register_global(wb_lv *L, const char *name, wb_lv_cfn fn, void
 wb_lv_value wb_lv_get_global(wb_lv *L, const char *name);
 void        wb_lv_set_global(wb_lv *L, const char *name, wb_lv_value v);
 
-/* host-driven call: invoke a function value (e.g. step) with args */
+/* host-driven call: invoke a function value (e.g. step) with args.
+ * Returns the FIRST result (or nil). Use wb_lv_call_multi for all of them. */
 wb_lv_value wb_lv_call(wb_lv *L, wb_lv_value fn, wb_lv_value *args, int nargs);
+
+/* Same call, every result: returns the count and sets *out to an arena-
+ * allocated array valid until the next call on this state. Returns 0 (with
+ * *out == NULL) when the call raised -- check L's error via wb_lv_pcall, or
+ * read the message from the __lv_last_error global it stashes. A host function
+ * returning several values (wb_lv_multi_value) expands to all of them, exactly
+ * as a Lua function's do. */
+int wb_lv_call_multi(wb_lv *L, wb_lv_value fn, wb_lv_value *args, int nargs,
+                     wb_lv_value **out);
 
 /* --------------------------------------------------------------- library */
 void wb_lv_register_builtins(wb_lv *L);   /* base library                      */
