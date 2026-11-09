@@ -274,6 +274,52 @@ int main(void) {
         wb_lv_value le = wb_lv_get_global(L, "__lv_last_error");
         CHECK(le.t == WB_LV_TABLE, "error(obj) stashes the original object");
     }
+    {
+        /* table constructor: keyed fields must not shift the array part.
+         * {spacing=6,'a','b','c'} and {'a','b','c',spacing=6} are the SAME
+         * table in Lua. Numbering positional items by their index in the field
+         * list let each keyed field push every later item up one slot, so the
+         * first form landed 'a' at [2] and lost the array part entirely. */
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "local t = {spacing=6, 'a','b','c'} echo(#t, t[1], t[2], t[3], t.spacing)", "tbl1");
+        check_rec(&r, "3abc6");
+
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "local t = {'a','b','c', spacing=6} echo(#t, t[1], t[2], t[3], t.spacing)", "tbl2");
+        check_rec(&r, "3abc6");
+
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "local t = {'a', spacing=6, 'b','c'} echo(#t, t[1], t[2], t[3])", "tbl3");
+        check_rec(&r, "3abc");
+
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "local t = {x=1, y=2, 'a','b'} echo(#t, t[1], t[2], tostring(t[3]))", "tbl4");
+        check_rec(&r, "2abnil");
+
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "local t = {spacing=6} echo(#t, tostring(t[1]))", "tbl5");
+        check_rec(&r, "0nil");
+
+        /* a trailing call still expands to every value */
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "local function f() return 7,8,9 end local t = {'a', f()} echo(#t, t[1], t[2], t[3], t[4])", "tbl6");
+        check_rec(&r, "4a789");
+
+        /* a non-trailing call contributes only its first value */
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "local function f() return 7,8,9 end local t = {f(), 'z'} echo(#t, t[1], t[2])", "tbl7");
+        check_rec(&r, "27z");
+
+        /* an explicit [n] key does not consume an array slot either */
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "local t = {10, 20, [9]=90} echo(#t, t[1], t[2])", "tbl8");
+        check_rec(&r, "21020");
+
+        /* a trailing vararg expands */
+        r.n = 0; r.buf[0] = 0;
+        wb_lv_run(L, "local function g(...) local u = {...} return #u, u[1], u[2] end echo(g(4,5))", "tbl9");
+        check_rec(&r, "245");
+    }
 
     wb_lv_free(L);
     printf("\n=== LV TESTS: %d pass, %d fail ===\n", g_pass, g_fail);

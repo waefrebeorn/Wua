@@ -740,6 +740,12 @@ static wb_lv_value eval_impl(wb_lv *L, ex *e, env *en) {
     }
     case N_TABLE: {
         wb_lv_table *t = wb_lv_table_new(L, e->nlist, e->nlist);
+        /* Positional (array-part) items are numbered 1,2,3,... in the order
+         * they appear, INDEPENDENTLY of keyed fields: in Lua,
+         * {spacing=6,'a','b','c'} and {'a','b','c',spacing=6} are the same
+         * table. Numbering them by their index in the field list instead
+         * would let each keyed field shift every later item up one slot. */
+        int64_t pos = 0;
         for (int i = 0; i < e->nlist; i++) {
             if (e->keys[i]) {
                 wb_lv_value k = eval(L, e->keys[i], en);
@@ -747,16 +753,18 @@ static wb_lv_value eval_impl(wb_lv *L, ex *e, env *en) {
                 if (L->has_err) return wb_lv_nil();
                 wb_lv_table_set(L, t, k, v);
             } else if (i == e->nlist - 1 && (e->list[i]->t == N_CALL || e->list[i]->t == N_METHOD || e->list[i]->t == N_VARARG)) {
+                /* the last field, if it is a call or vararg, expands to all
+                 * of its values (Lua's table-constructor rule) */
                 wb_lv_value *out = NULL; int n = 0;
                 wb_lv_eval_multi(L, e->list[i], en, &out, &n);
                 for (int j = 0; j < n; j++) {
-                    wb_lv_value k; k.t = WB_LV_INT; k.as.i = (int64_t)(i + j + 1);
+                    wb_lv_value k; k.t = WB_LV_INT; k.as.i = ++pos;
                     wb_lv_table_set(L, t, k, out[j]);
                 }
             } else {
                 wb_lv_value v = eval(L, e->list[i], en);
                 if (L->has_err) return wb_lv_nil();
-                wb_lv_value k; k.t = WB_LV_INT; k.as.i = (int64_t)(i + 1);
+                wb_lv_value k; k.t = WB_LV_INT; k.as.i = ++pos;
                 wb_lv_table_set(L, t, k, v);
             }
         }
