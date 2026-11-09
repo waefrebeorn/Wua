@@ -187,5 +187,6 @@ void wb_lv_register_os(wb_lv *L);
 void wb_lv_register_io(wb_lv *L);
 void wb_lv_register_debug(wb_lv *L);
 void wb_lv_register_utf8(wb_lv *L);
+void wb_lv_register_coro(wb_lv *L);
 
 #endif /* WB_LV_INTERNAL_H */

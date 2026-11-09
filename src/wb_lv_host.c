@@ -468,4 +468,5 @@ void wb_lv_openlibs(wb_lv *L) {
     wb_lv_register_io(L);
     wb_lv_register_debug(L);
     wb_lv_register_utf8(L);
+    wb_lv_register_coro(L);
 }
