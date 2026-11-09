@@ -16,6 +16,7 @@
 #define WB_LV_H
 
 #include <stdint.h>
+#include <string.h>
 #include <stddef.h>
 
 typedef struct wb_lv       wb_lv;
@@ -43,13 +44,15 @@ struct wb_lv_value {
         struct { wb_lv_cfn f; void *ud; } cf;
         struct wb_lv_multi *multi;
     } as;
+    size_t slen;                     /* byte length when t == WB_LV_STR       */
 };
 
 #define wb_lv_nil()      ((wb_lv_value){.t=WB_LV_NIL})
 #define wb_lv_bool(B)    ((wb_lv_value){.t=WB_LV_BOOL, .as.b=(B)})
 #define wb_lv_integer(N) ((wb_lv_value){.t=WB_LV_INT,  .as.i=(int64_t)(N)})
 #define wb_lv_number(N)  ((wb_lv_value){.t=WB_LV_NUM,  .as.n=(N)})
-#define wb_lv_str(S)     ((wb_lv_value){.t=WB_LV_STR,  .as.s=(S)})
+#define wb_lv_str(S)     ((wb_lv_value){.t=WB_LV_STR,  .as.s=(S), .slen=(S)?(size_t)strlen(S):0})
+#define wb_lv_strl(S,N) ((wb_lv_value){.t=WB_LV_STR,  .as.s=(S), .slen=(size_t)(N)})
 
 int    wb_lv_truthy(wb_lv_value v);
 int    wb_lv_equal(wb_lv *L, wb_lv_value a, wb_lv_value b);

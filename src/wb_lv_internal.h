@@ -40,6 +40,7 @@ typedef enum {
 typedef struct ex {
     ntype t; int line;
     int64_t i; double num; const char *str; const char *name;
+    size_t slen;                     /* byte length when t == N_STR          */
     int op;                          /* operator token for N_BINOP/N_UNARY  */
     struct ex *e1, *e2, *e3, *e4;    /* operands / cond / body / else / step */
     struct ex **list; int nlist;     /* stmts / args / params / fields       */
@@ -118,7 +119,7 @@ typedef enum {
     T_CONCAT, T_DOTS, T_EQ, T_NE, T_LE, T_GE, T_IDIV, T_SHL, T_SHR, T_DBCOLON,
 } tktype;
 
-typedef struct { int type; int64_t i; double num; const char *str; int line; } tok;
+typedef struct { int type; int64_t i; double num; const char *str; size_t slen; int line; } tok;
 
 #define WB_LV_TKCHAR(c) ((int)(unsigned char)(c))
 

@@ -243,11 +243,11 @@ static int push_captures(wb_lv *L, matchstate *ms, const char *s, const char *e,
                 out[i].as.i = (int64_t)(ms->capture[i].init - ms->src_init) + 1;
             } else {
                 size_t len = (size_t)ms->capture[i].len;
-                out[i] = wb_lv_str(wb_lv_intern(L, ms->capture[i].init, len));
+                out[i] = wb_lv_strl(wb_lv_intern(L, ms->capture[i].init, len), len);
             }
         } else {
             /* no captures: the whole match */
-            out[i] = wb_lv_str(wb_lv_intern(L, s, (size_t)(e - s)));
+            out[i] = wb_lv_strl(wb_lv_intern(L, s, (size_t)(e - s)), (size_t)(e - s));
         }
     }
     return nlevels;
@@ -264,26 +264,26 @@ static int posrelat(int64_t pos, size_t len) {
 static wb_lv_value s_len(wb_lv *L, wb_lv_value *a, int n) {
     (void)L;
     if (n < 1 || a[0].t != WB_LV_STR) return wb_lv_nil();
-    return wb_lv_integer((int64_t)strlen(a[0].as.s));
+    return wb_lv_integer((int64_t)a[0].slen);
 }
 
 static wb_lv_value s_sub(wb_lv *L, wb_lv_value *a, int n) {
     if (n < 1 || a[0].t != WB_LV_STR) return wb_lv_nil();
-    size_t l = strlen(a[0].as.s);
+    size_t l = a[0].slen;
     int i = posrelat(n >= 2 ? wb_lv_tointeger(a[1], NULL) : 1, l);
     int j = posrelat(n >= 3 ? wb_lv_tointeger(a[2], NULL) : (int64_t)l, l);
     if (i < 1) i = 1;
     if (j > (int)l) j = (int)l;
-    if (i > j) return wb_lv_str(wb_lv_intern(L, "", 0));
-    return wb_lv_str(wb_lv_intern(L, a[0].as.s + i - 1, (size_t)(j - i + 1)));
+    if (i > j) return wb_lv_strl(wb_lv_intern(L, "", 0), 0);
+    return wb_lv_strl(wb_lv_intern(L, a[0].as.s + i - 1, (size_t)(j - i + 1)), (size_t)(j - i + 1));
 }
 
 static wb_lv_value s_rep(wb_lv *L, wb_lv_value *a, int n) {
     if (n < 1 || a[0].t != WB_LV_STR) return wb_lv_nil();
     int64_t cnt = (n >= 2) ? wb_lv_tointeger(a[1], NULL) : 0;
     const char *sep = (n >= 3 && a[2].t == WB_LV_STR) ? a[2].as.s : "";
-    size_t sl = strlen(a[0].as.s), sepl = strlen(sep);
-    if (cnt <= 0) return wb_lv_str(wb_lv_intern(L, "", 0));
+    size_t sl = a[0].slen, sepl = (n >= 3 && a[2].t == WB_LV_STR) ? a[2].slen : 0;
+    if (cnt <= 0) return wb_lv_strl(wb_lv_intern(L, "", 0), 0);
     size_t total = (size_t)cnt * sl + (size_t)(cnt - 1) * sepl;
     char *buf = (char *)malloc(total + 1);
     if (!buf) return wb_lv_nil();
@@ -292,50 +292,50 @@ static wb_lv_value s_rep(wb_lv *L, wb_lv_value *a, int n) {
         if (i + 1 < cnt) { memcpy(buf, sep, sepl); buf += sepl; }
     }
     *buf = 0;
-    wb_lv_value r = wb_lv_str(wb_lv_intern(L, buf - total, total));
+    wb_lv_value r = wb_lv_strl(wb_lv_intern(L, buf - total, total), total);
     free(buf - total);
     return r;
 }
 
 static wb_lv_value s_upper(wb_lv *L, wb_lv_value *a, int n) {
     if (n < 1 || a[0].t != WB_LV_STR) return wb_lv_nil();
-    size_t l = strlen(a[0].as.s);
+    size_t l = a[0].slen;
     char *buf = (char *)malloc(l + 1);
     if (!buf) return wb_lv_nil();
     for (size_t i = 0; i < l; i++) buf[i] = (char)toupper((unsigned char)a[0].as.s[i]);
     buf[l] = 0;
-    wb_lv_value r = wb_lv_str(wb_lv_intern(L, buf, l));
+    wb_lv_value r = wb_lv_strl(wb_lv_intern(L, buf, l), l);
     free(buf);
     return r;
 }
 
 static wb_lv_value s_lower(wb_lv *L, wb_lv_value *a, int n) {
     if (n < 1 || a[0].t != WB_LV_STR) return wb_lv_nil();
-    size_t l = strlen(a[0].as.s);
+    size_t l = a[0].slen;
     char *buf = (char *)malloc(l + 1);
     if (!buf) return wb_lv_nil();
     for (size_t i = 0; i < l; i++) buf[i] = (char)tolower((unsigned char)a[0].as.s[i]);
     buf[l] = 0;
-    wb_lv_value r = wb_lv_str(wb_lv_intern(L, buf, l));
+    wb_lv_value r = wb_lv_strl(wb_lv_intern(L, buf, l), l);
     free(buf);
     return r;
 }
 
 static wb_lv_value s_reverse(wb_lv *L, wb_lv_value *a, int n) {
     if (n < 1 || a[0].t != WB_LV_STR) return wb_lv_nil();
-    size_t l = strlen(a[0].as.s);
+    size_t l = a[0].slen;
     char *buf = (char *)malloc(l + 1);
     if (!buf) return wb_lv_nil();
     for (size_t i = 0; i < l; i++) buf[i] = a[0].as.s[l - 1 - i];
     buf[l] = 0;
-    wb_lv_value r = wb_lv_str(wb_lv_intern(L, buf, l));
+    wb_lv_value r = wb_lv_strl(wb_lv_intern(L, buf, l), l);
     free(buf);
     return r;
 }
 
 static wb_lv_value s_byte(wb_lv *L, wb_lv_value *a, int n) {
     if (n < 1 || a[0].t != WB_LV_STR) return wb_lv_nil();
-    size_t l = strlen(a[0].as.s);
+    size_t l = a[0].slen;
     int i = posrelat(n >= 2 ? wb_lv_tointeger(a[1], NULL) : 1, l);
     int j = posrelat(n >= 3 ? wb_lv_tointeger(a[2], NULL) : (int64_t)i, l);
     if (i < 1) i = 1;
@@ -353,7 +353,7 @@ static wb_lv_value s_char(wb_lv *L, wb_lv_value *a, int n) {
         int64_t v = wb_lv_tointeger(a[i], NULL);
         buf[k++] = (char)(v & 0xFF);
     }
-    return wb_lv_str(wb_lv_intern(L, buf, (size_t)k));
+    return wb_lv_strl(wb_lv_intern(L, buf, (size_t)k), (size_t)k);
 }
 
 /* --------------------------------------------------------------- format */
@@ -379,7 +379,7 @@ static void addquoted(wb_lv *L, char **buf, size_t *len, size_t *cap, const char
 static wb_lv_value s_format(wb_lv *L, wb_lv_value *a, int n) {
     if (n < 1 || a[0].t != WB_LV_STR) return wb_lv_nil();
     const char *fmt = a[0].as.s;
-    size_t fl = strlen(fmt);
+    size_t fl = a[0].slen;
     char *buf = NULL; size_t len = 0, cap = 0;
     int arg = 1;
     for (size_t i = 0; i < fl; i++) {
@@ -452,11 +452,25 @@ static wb_lv_value s_format(wb_lv *L, wb_lv_value *a, int n) {
                 wb_lv_value f = wb_lv_table_get(L, sm, wb_lv_str("__tostring"));
                 if (f.t == WB_LV_FUNCTION || f.t == WB_LV_CFUNCTION) sv = wb_lv_call(L, f, &a[arg-1], 1);
             }
-            const char *s = wb_lv_tostring_intern(L, sv);
-            if (strchr(spec, '.') || strlen(s) > 400) {
-                /* respect a precision if given, else print in full */
-                snprintf(tmp, sizeof tmp, spec, s);
-            } else snprintf(tmp, sizeof tmp, spec, s);
+            const char *sa; size_t sla;
+            if (sv.t == WB_LV_STR) { sa = sv.as.s; sla = sv.slen; }
+            else { const char *t = wb_lv_tostring_intern(L, sv); sa = t; sla = strlen(t); }
+            if (strchr(spec, '.') == NULL && sla != (size_t)strlen(sa)) {
+                /* embedded NUL: strlen truncates, so emit the bytes + width */
+                int width = 0; const char *wq = spec + 1;
+                for (; *wq && strchr("-+ #0", *wq); wq++);
+                for (; isdigit((unsigned char)*wq); wq++) width = width * 10 + (*wq - '0');
+                char pad = strchr(spec, '0') ? '0' : ' ';
+                int left = strchr(spec, '-') != NULL;
+                size_t outn = sla > (size_t)width ? sla : (size_t)width;
+                while (len + outn + 2 > cap) { cap = cap * 2 + 32; buf = (char *)realloc(buf, cap); }
+                if (!left) for (int w = width - (int)sla; w > 0; w--) buf[len++] = pad;
+                memcpy(buf + len, sa, sla); len += sla;
+                if (left) for (int w = width - (int)sla; w > 0; w--) buf[len++] = ' ';
+                continue;
+            }
+            if (strchr(spec, '.') || sla > 400) snprintf(tmp, sizeof tmp, spec, sa);
+            else snprintf(tmp, sizeof tmp, spec, sa);
             break;
         }
         case 'q': {
@@ -473,7 +487,7 @@ static wb_lv_value s_format(wb_lv *L, wb_lv_value *a, int n) {
         memcpy(buf + len, tmp, tl); len += tl;
     }
     if (buf) buf[len] = 0;
-    wb_lv_value r = wb_lv_str(wb_lv_intern(L, buf ? buf : "", len));
+    wb_lv_value r = wb_lv_strl(wb_lv_intern(L, buf ? buf : "", len), len);
     free(buf);
     return r;
 }
@@ -482,7 +496,7 @@ static wb_lv_value s_format(wb_lv *L, wb_lv_value *a, int n) {
 
 static wb_lv_value s_find(wb_lv *L, wb_lv_value *a, int n) {
     if (n < 2 || a[0].t != WB_LV_STR || a[1].t != WB_LV_STR) return wb_lv_nil();
-    size_t ls = strlen(a[0].as.s), lp = strlen(a[1].as.s);
+    size_t ls = a[0].slen, lp = a[1].slen;
     int64_t init = (n >= 3) ? wb_lv_tointeger(a[2], NULL) : 1;
     int i = posrelat(init, ls);
     if (i < 1) i = 1;
@@ -526,7 +540,7 @@ static wb_lv_value s_find(wb_lv *L, wb_lv_value *a, int n) {
 
 static wb_lv_value s_match(wb_lv *L, wb_lv_value *a, int n) {
     if (n < 2 || a[0].t != WB_LV_STR || a[1].t != WB_LV_STR) return wb_lv_nil();
-    size_t ls = strlen(a[0].as.s), lp = strlen(a[1].as.s);
+    size_t ls = a[0].slen, lp = a[1].slen;
     int64_t init = (n >= 3) ? wb_lv_tointeger(a[2], NULL) : 1;
     int i = posrelat(init, ls);
     if (i < 1) i = 1;
@@ -580,8 +594,8 @@ static wb_lv_value iter_gmatch(wb_lv *L, wb_lv_value *a, int n, void *ud) {
 static wb_lv_value s_gmatch(wb_lv *L, wb_lv_value *a, int n) {
     if (n < 2 || a[0].t != WB_LV_STR || a[1].t != WB_LV_STR) return wb_lv_nil();
     gmatch_state *st = (gmatch_state *)calloc(1, sizeof *st);
-    st->src = a[0].as.s; st->ls = strlen(a[0].as.s);
-    st->pat = a[1].as.s; st->lp = strlen(a[1].as.s);
+    st->src = a[0].as.s; st->ls = a[0].slen;
+    st->pat = a[1].as.s; st->lp = a[1].slen;
     wb_lv_value it; it.t = WB_LV_CFUNCTION; it.as.cf.f = iter_gmatch; it.as.cf.ud = st;
     return it;
 }
@@ -589,9 +603,9 @@ static wb_lv_value s_gmatch(wb_lv *L, wb_lv_value *a, int n) {
 static wb_lv_value s_gsub(wb_lv *L, wb_lv_value *a, int n) {
     if (n < 3 || a[0].t != WB_LV_STR || a[1].t != WB_LV_STR) return wb_lv_nil();
     const char *src = a[0].as.s;
-    size_t ls = strlen(src);
+    size_t ls = a[0].slen;
     const char *pat = a[1].as.s;
-    size_t lp = strlen(pat);
+    size_t lp = a[1].slen;
     int64_t maxn = (n >= 4) ? wb_lv_tointeger(a[3], NULL) : (int64_t)ls + 1;
     int anchor = (pat[0] == '^');
     const char *p = pat + (anchor ? 1 : 0);
@@ -637,7 +651,7 @@ static wb_lv_value s_gsub(wb_lv *L, wb_lv_value *a, int n) {
                 int nc = push_captures(L, &ms, s, e, caps);
                 wb_lv_value rep = wb_lv_table_get(L, a[2].as.tab, caps[0]);
                 if (rep.t == WB_LV_STR) {
-                    size_t l = strlen(rep.as.s);
+                    size_t l = rep.slen;
                     while (len + l + 1 > cap) { cap = cap*2+32; buf = (char*)realloc(buf, cap); }
                     memcpy(buf + len, rep.as.s, l); len += l;
                 } else if (rep.t == WB_LV_NUM || rep.t == WB_LV_INT) {
@@ -649,10 +663,10 @@ static wb_lv_value s_gsub(wb_lv *L, wb_lv_value *a, int n) {
             } else if (a[2].t == WB_LV_FUNCTION || a[2].t == WB_LV_CFUNCTION) {
                 wb_lv_value caps[MAXCAPTURES];
                 int nc = push_captures(L, &ms, s, e, caps);
-                if (nc == 0) { caps[0] = wb_lv_str(wb_lv_intern(L, s, (size_t)(e - s))); nc = 1; }
+                if (nc == 0) { caps[0] = wb_lv_strl(wb_lv_intern(L, s, (size_t)(e - s)), (size_t)(e - s)); nc = 1; }
                 wb_lv_value rep = wb_lv_call(L, a[2], caps, nc);
                 if (rep.t == WB_LV_STR) {
-                    size_t l = strlen(rep.as.s);
+                    size_t l = rep.slen;
                     while (len + l + 1 > cap) { cap = cap*2+32; buf = (char*)realloc(buf, cap); }
                     memcpy(buf + len, rep.as.s, l); len += l;
                 } else if (rep.t == WB_LV_NUM || rep.t == WB_LV_INT) {
@@ -689,7 +703,7 @@ static wb_lv_value s_gsub(wb_lv *L, wb_lv_value *a, int n) {
     }
     if (buf) buf[len] = 0;
     wb_lv_value out[2];
-    out[0] = wb_lv_str(wb_lv_intern(L, buf ? buf : "", len));
+    out[0] = wb_lv_strl(wb_lv_intern(L, buf ? buf : "", len), len);
     out[1] = wb_lv_integer(count);
     free(buf);
     return wb_lv_multi_value(L, out, 2);

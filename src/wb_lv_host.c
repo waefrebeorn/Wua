@@ -101,7 +101,7 @@ int wb_lv_pcall(wb_lv *L, wb_lv_value fn, wb_lv_value *args, int nargs,
 static wb_lv_value cfn_print(wb_lv *L, wb_lv_value *args, int n, void *ud) {
     (void)ud;
     for (int i = 0; i < n; i++) {
-        if (i) printf("\t");
+        if (i) fwrite("\t", 1, 1, stdout);
         wb_lv_value v = args[i];
         /* __tostring */
         wb_lv_table *m = wb_lv_getmetatable(L, v);
@@ -111,9 +111,10 @@ static wb_lv_value cfn_print(wb_lv *L, wb_lv_value *args, int n, void *ud) {
                 v = wb_lv_call(L, f, &args[i], 1);
             }
         }
-        printf("%s", wb_lv_tostring_intern(L, v));
+        const char *sv = wb_lv_tostring_intern(L, v);
+        fwrite(sv, 1, v.t == WB_LV_STR ? v.slen : strlen(sv), stdout);
     }
-    printf("\n");
+    fwrite("\n", 1, 1, stdout);
     return wb_lv_nil();
 }
 

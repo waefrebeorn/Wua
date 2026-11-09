@@ -233,22 +233,27 @@ wb_lv_value wb_lv_table_get(wb_lv *L, const wb_lv_table *tt, wb_lv_value k) {
 
 /* `#t`: the array-part border. Lua's rule is any n with t[n] ~= nil and
  * t[n+1] == nil; for a sequence that is the length. */
+/* present(k): is integer key 1..k present? (not a tombstone, value non-nil) */
+static int ipres(const wb_lv_table *t, int64_t n) {
+    wb_lv_value k; k.t = WB_LV_INT; k.as.i = n;
+    return tfind((wb_lv_table *)t, k) != NULL;
+}
+
 size_t wb_lv_table_len(const wb_lv_table *tt) {
     wb_lv_table *t = (wb_lv_table *)tt;
     if (!t) return 0;
     if (!t->seq_dirty) return t->seq;
-    size_t n = 0;
-    if (t->cap) {
-        /* linear walk from the current hint; good for the common sequence */
-        while (n + 1 < t->cap * 2) {
-            wb_lv_value k; k.t = WB_LV_INT; k.as.i = (int64_t)(n + 1);
-            if (tfind(t, k) == NULL) break;
-            n++;
-            if (n > t->count) break;
-        }
+    /* Lua's length: find a present-then-absent border by exponential scan,
+     * then a binary search between them. Even with holes this is the border
+     * Lua reports, so # on a sparse array matches the reference. */
+    int64_t i = 0, j = 1;
+    while (ipres(t, j)) { i = j; j *= 2; }
+    while (j - i > 1) {
+        int64_t m = (i + j) / 2;
+        if (ipres(t, m)) i = m; else j = m;
     }
-    t->seq = n; t->seq_dirty = 0;
-    return n;
+    t->seq = (size_t)i; t->seq_dirty = 0;
+    return (size_t)i;
 }
 
 /* `next` support: iterate the backing array. */

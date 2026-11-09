@@ -635,7 +635,7 @@ static wb_lv_value f_read(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     if (!fgets(buf, sizeof buf, f)) return wb_lv_nil();
     size_t l = strlen(buf);
     if (l && buf[l-1] == '\n') buf[--l] = 0;
-    return wb_lv_str(wb_lv_intern(L, buf, l));
+    return wb_lv_strl(wb_lv_intern(L, buf, l), l);
 }
 
 static wb_lv_value f_seek(wb_lv *L, wb_lv_value *a, int n, void *ud) {
@@ -661,7 +661,7 @@ static wb_lv_value iter_lines(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     if (!fgets(buf, sizeof buf, st->f)) { fclose(st->f); st->f = NULL; return wb_lv_nil(); }
     size_t l = strlen(buf);
     if (l && buf[l-1] == '\n') buf[--l] = 0;
-    return wb_lv_str(wb_lv_intern(L, buf, l));
+    return wb_lv_strl(wb_lv_intern(L, buf, l), l);
 }
 
 static wb_lv_value i_lines(wb_lv *L, wb_lv_value *a, int n, void *ud) {
@@ -682,7 +682,7 @@ static wb_lv_value i_write(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     (void)ud;
     for (int i = 0; i < n; i++) {
         wb_lv_value v = a[i];
-        if (v.t == WB_LV_STR) fputs(v.as.s, stdout);
+        if (v.t == WB_LV_STR) fwrite(v.as.s, 1, v.slen, stdout);
         else if (v.t == WB_LV_INT || v.t == WB_LV_NUM) fputs(wb_lv_tostring_intern(L, v), stdout);
     }
     return wb_lv_nil();
@@ -694,7 +694,7 @@ static wb_lv_value i_read(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     if (!fgets(buf, sizeof buf, stdin)) return wb_lv_nil();
     size_t l = strlen(buf);
     if (l && buf[l-1] == '\n') buf[--l] = 0;
-    return wb_lv_str(wb_lv_intern(L, buf, l));
+    return wb_lv_strl(wb_lv_intern(L, buf, l), l);
 }
 
 static wb_lv_value i_input(wb_lv *L, wb_lv_value *a, int n, void *ud) {

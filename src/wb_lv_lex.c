@@ -235,9 +235,11 @@ static int lex_quoted(parser *P, char q) {
             }
         }
     }
+    size_t litsz = b.n;                    /* real bytes; sentinel next */
     sb_put(&b, 0);
     P->cur.type = T_STR;
-    P->cur.str = wb_lv_intern(P->L, b.p ? b.p : "", b.n ? b.n - 1 : 0);
+    P->cur.str = wb_lv_intern(P->L, b.p ? b.p : "", litsz);
+    P->cur.slen = litsz;
     free(b.p);
     return 0;
 }
@@ -356,9 +358,11 @@ void wb_lv_next_tok(parser *P) {
                 if (s[P->p] == '\n') P->line++;
                 sb_put(&b, s[P->p++]);
             }
+            size_t litsz = b.n;                /* real bytes; sentinel next */
             sb_put(&b, 0);
             t.type = T_STR;
-            t.str = wb_lv_intern(P->L, b.p ? b.p : "", b.n ? b.n - 1 : 0);
+            t.str = wb_lv_intern(P->L, b.p ? b.p : "", litsz);
+            t.slen = litsz;
             free(b.p);
             t.line = P->line;
             P->cur = t;

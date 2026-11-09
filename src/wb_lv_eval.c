@@ -328,7 +328,7 @@ wb_lv_value wb_lv_compare(wb_lv *L, int op, wb_lv_value a, wb_lv_value b) {
 }
 
 int wb_lv_len(wb_lv *L, wb_lv_value v, size_t *out) {
-    if (v.t == WB_LV_STR) { *out = strlen(v.as.s); return 1; }
+    if (v.t == WB_LV_STR) { *out = v.slen; return 1; }
     if (v.t == WB_LV_TABLE) {
         wb_lv_table *m = wb_lv_getmetatable(L, v);
         wb_lv_value f = m ? wb_lv_table_get(L, m, wb_lv_str("__len")) : wb_lv_nil();
@@ -348,15 +348,18 @@ wb_lv_value wb_lv_concat(wb_lv *L, wb_lv_value a, wb_lv_value b) {
     int an = (a.t == WB_LV_STR || a.t == WB_LV_INT || a.t == WB_LV_NUM);
     int bn = (b.t == WB_LV_STR || b.t == WB_LV_INT || b.t == WB_LV_NUM);
     if (an && bn) {
-        const char *sa = wb_lv_tostring_intern(L, a);
-        const char *sb = wb_lv_tostring_intern(L, b);
-        size_t la = strlen(sa), lb = strlen(sb);
+        size_t la, lb;
+        const char *sa, *sb;
+        if (a.t == WB_LV_STR) { sa = a.as.s; la = a.slen; }
+        else { sa = wb_lv_tostring_intern(L, a); la = strlen(sa); }
+        if (b.t == WB_LV_STR) { sb = b.as.s; lb = b.slen; }
+        else { sb = wb_lv_tostring_intern(L, b); lb = strlen(sb); }
         char *buf = (char *)malloc(la + lb + 1);
         if (!buf) { wb_lv_error(L, "out of memory"); return wb_lv_nil(); }
         memcpy(buf, sa, la); memcpy(buf + la, sb, lb); buf[la + lb] = 0;
         const char *r = wb_lv_intern(L, buf, la + lb);
         free(buf);
-        return wb_lv_str(r);
+        return wb_lv_strl(r, la + lb);
     }
     wb_lv_table *ma = wb_lv_getmetatable(L, a);
     wb_lv_table *mb = wb_lv_getmetatable(L, b);
@@ -587,7 +590,7 @@ static wb_lv_value eval_impl(wb_lv *L, ex *e, env *en) {
     case N_FALSE: return wb_lv_bool(0);
     case N_INT: return wb_lv_integer(e->i);
     case N_NUM: return wb_lv_number(e->num);
-    case N_STR: return wb_lv_str(e->str);
+    case N_STR: return wb_lv_strl(e->str, e->slen);
     case N_NAME: return env_get(L, en, e->name);
     case N_PAREN: {
         /* parenthesised: exactly one value */

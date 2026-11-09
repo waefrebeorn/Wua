@@ -144,7 +144,7 @@ static ex *parse_table(parser *P) {
             if (tok_is(P, '=')) {
                 wb_lv_next_tok(P);
                 key = espawn(P->pl);
-                if (key) { key->t = N_STR; key->str = nm; }
+                if (key) { key->t = N_STR; key->str = nm; key->slen = strlen(nm); }
                 val = parse_expr(P);
             } else {
                 /* not a keyed field: rewind and parse as a positional expr */
@@ -216,7 +216,7 @@ static ex *parse_simple(parser *P) {
     switch (P->cur.type) {
     case T_INT: { ex *e = espawn(P->pl); if(!e){wb_lv_perr(P,"pool");return NULL;} e->t=N_INT; e->i=P->cur.i; wb_lv_next_tok(P); e->line=line; return e; }
     case T_NUM: { ex *e = espawn(P->pl); if(!e){wb_lv_perr(P,"pool");return NULL;} e->t=N_NUM; e->num=P->cur.num; wb_lv_next_tok(P); e->line=line; return e; }
-    case T_STR: { ex *e = espawn(P->pl); if(!e){wb_lv_perr(P,"pool");return NULL;} e->t=N_STR; e->str=P->cur.str; wb_lv_next_tok(P); e->line=line; return e; }
+    case T_STR: { ex *e = espawn(P->pl); if(!e){wb_lv_perr(P,"pool");return NULL;} e->t=N_STR; e->str=P->cur.str; e->slen=P->cur.slen; wb_lv_next_tok(P); e->line=line; return e; }
     case T_NIL: { ex *e = espawn(P->pl); if(!e){wb_lv_perr(P,"pool");return NULL;} e->t=N_NIL; wb_lv_next_tok(P); e->line=line; return e; }
     case T_TRUE: { ex *e = espawn(P->pl); if(!e){wb_lv_perr(P,"pool");return NULL;} e->t=N_TRUE; wb_lv_next_tok(P); e->line=line; return e; }
     case T_FALSE: { ex *e = espawn(P->pl); if(!e){wb_lv_perr(P,"pool");return NULL;} e->t=N_FALSE; wb_lv_next_tok(P); e->line=line; return e; }
@@ -261,7 +261,7 @@ static ex *parse_prefix(parser *P) {
             ex *n = espawn(P->pl);
             ex *k = espawn(P->pl);
             if (!n || !k) { wb_lv_perr(P, "out of AST pool"); return NULL; }
-            k->t = N_STR; k->str = P->cur.str;
+            k->t = N_STR; k->str = P->cur.str; k->slen = P->cur.slen;
             n->t = N_INDEX; n->e1 = e; n->e2 = k; n->line = P->cur.line;
             wb_lv_next_tok(P);
             e = n;
@@ -283,7 +283,7 @@ static ex *parse_prefix(parser *P) {
             ex *mkey = espawn(P->pl);
             ex *base = espawn(P->pl);
             if (!call || !mkey || !base) { wb_lv_perr(P, "out of AST pool"); return NULL; }
-            mkey->t = N_STR; mkey->str = mname;
+            mkey->t = N_STR; mkey->str = mname; mkey->slen = strlen(mname);
             base->t = N_INDEX; base->e1 = e; base->e2 = mkey;
             call->t = N_METHOD; call->e1 = base; call->is_method = 1; call->line = P->cur.line;
             /* arguments */
@@ -300,7 +300,7 @@ static ex *parse_prefix(parser *P) {
             } else if (tok_is(P, T_STR)) {
                 call->list = (ex **)wb_lv_arena_alloc(P->L, sizeof(ex *));
                 ex *s = espawn(P->pl);
-                if (s) { s->t = N_STR; s->str = P->cur.str; }
+                if (s) { s->t = N_STR; s->str = P->cur.str; s->slen = P->cur.slen; }
                 call->list[0] = s; call->nlist = 1; wb_lv_next_tok(P);
             } else wb_lv_perr(P, "arguments expected");
             e = call;
@@ -320,7 +320,7 @@ static ex *parse_prefix(parser *P) {
                 call->list[0] = parse_table(P); call->nlist = 1;
             } else {
                 ex *s = espawn(P->pl);
-                if (s) { s->t = N_STR; s->str = P->cur.str; }
+                if (s) { s->t = N_STR; s->str = P->cur.str; s->slen = P->cur.slen; }
                 call->list = (ex **)wb_lv_arena_alloc(P->L, sizeof(ex *));
                 call->list[0] = s; call->nlist = 1; wb_lv_next_tok(P);
             }
