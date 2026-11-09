@@ -27,7 +27,7 @@ int wb_lv_rawequal(wb_lv_value a, wb_lv_value b) {
     case WB_LV_BOOL: return a.as.b == b.as.b;
     case WB_LV_INT: return a.as.i == b.as.i;
     case WB_LV_NUM: return a.as.n == b.as.n;
-    case WB_LV_STR: return a.as.s == b.as.s;
+    case WB_LV_STR: return a.slen == b.slen && memcmp(a.as.s, b.as.s, a.slen) == 0;
     case WB_LV_TABLE: return a.as.tab == b.as.tab;
     case WB_LV_FUNCTION: return a.as.fn == b.as.fn;
     case WB_LV_CFUNCTION: return a.as.cf.f == b.as.cf.f;
@@ -154,7 +154,8 @@ const char *wb_lv_intern(wb_lv *L, const char *bytes, size_t len) {
 /* ---------------------------------------------------------------- tables */
 
 static unsigned valhash(wb_lv_value k) {
-    if (k.t == WB_LV_STR) return strhash(k.as.s, strlen(k.as.s));
+    /* length-aware: an embedded-NUL key hashes its full bytes */
+    if (k.t == WB_LV_STR) return k.slen ? strhash(k.as.s, k.slen) : 2166136261u;
     if (k.t == WB_LV_NUM) { double d = k.as.n; return (unsigned)((unsigned long long)(d * 2654435761.0)); }
     if (k.t == WB_LV_INT) return (unsigned)((unsigned long long)k.as.i * 2654435761u);
     return (unsigned)(uintptr_t)k.as.tab | (unsigned)(uintptr_t)k.as.fn;
@@ -173,7 +174,7 @@ static int keyeq(wb_lv_value a, wb_lv_value b) {
     if (a.t == WB_LV_NUM) return a.as.n == b.as.n;
     if (a.t == WB_LV_INT) return a.as.i == b.as.i;
     /* content equality: callers may hand us a non-interned C string */
-    if (a.t == WB_LV_STR) return strcmp(a.as.s, b.as.s) == 0;
+    if (a.t == WB_LV_STR) return a.slen == b.slen && memcmp(a.as.s, b.as.s, a.slen) == 0;
     return wb_lv_rawequal(a, b);
 }
 

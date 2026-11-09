@@ -261,7 +261,7 @@ static ex *parse_prefix(parser *P) {
             ex *n = espawn(P->pl);
             ex *k = espawn(P->pl);
             if (!n || !k) { wb_lv_perr(P, "out of AST pool"); return NULL; }
-            k->t = N_STR; k->str = P->cur.str; k->slen = P->cur.slen;
+            k->t = N_STR; k->str = P->cur.str; k->slen = strlen(P->cur.str);
             n->t = N_INDEX; n->e1 = e; n->e2 = k; n->line = P->cur.line;
             wb_lv_next_tok(P);
             e = n;
