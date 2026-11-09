@@ -5,6 +5,7 @@
  */
 #include "wb_lv_internal.h"
 
+#include <errno.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -131,7 +132,40 @@ static wb_lv_value call_meta(wb_lv *L, wb_lv_value f, wb_lv_value a, wb_lv_value
     return wb_lv_call(L, f, args, 2);
 }
 
+/* Lua coerces numeric strings in arithmetic. Returns 1 when `out` is usable. */
+static int coerce_num(wb_lv_value v, wb_lv_value *out) {
+    if (v.t == WB_LV_INT || v.t == WB_LV_NUM) { *out = v; return 1; }
+    if (v.t != WB_LV_STR) return 0;
+    const char *str = v.as.s;
+    char *end = NULL;
+    double d = strtod(str, &end);
+    if (end == str) return 0;
+    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') end++;
+    if (*end != 0) return 0;
+    /* a plain integer literal becomes an integer */
+    const char *q = str;
+    while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+    if (*q == '+' || *q == '-') q++;
+    int alldig = (*q != 0);
+    for (const char *r = q; *r; r++) if (*r < '0' || *r > '9') { alldig = 0; break; }
+    if (alldig) {
+        errno = 0;
+        long long iv = strtoll(str, NULL, 10);
+        *out = wb_lv_integer((int64_t)iv);
+        return 1;
+    }
+    *out = wb_lv_number(d);
+    return 1;
+}
+
 wb_lv_value wb_lv_arith(wb_lv *L, int op, wb_lv_value a, wb_lv_value b) {
+    /* coerce numeric strings, as Lua does */
+    {
+        wb_lv_value ca, cb;
+        int an = coerce_num(a, &ca), bn = coerce_num(b, &cb);
+        if (an && bn) { a = ca; b = cb; }
+    }
+
     /* metamethods first, when neither operand is a plain number */
     if (!(a.t == WB_LV_INT || a.t == WB_LV_NUM) || !(b.t == WB_LV_INT || b.t == WB_LV_NUM)) {
         const char *ev = arith_event(op);
@@ -177,6 +211,7 @@ wb_lv_value wb_lv_arith(wb_lv *L, int op, wb_lv_value a, wb_lv_value b) {
         case '+': r = (int64_t)((uint64_t)x + (uint64_t)y); break;
         case '-': r = (int64_t)((uint64_t)x - (uint64_t)y); break;
         case '*': r = (int64_t)((uint64_t)x * (uint64_t)y); break;
+        case '/': return wb_lv_number((double)x / (double)y);
         case T_IDIV:
             if (y == 0) { wb_lv_error(L, "attempt to divide by zero (line %d)", L->curline); return wb_lv_nil(); }
             r = x / y;
@@ -435,46 +470,63 @@ int wb_lv_call_value(wb_lv *L, wb_lv_value fn, wb_lv_value *args, int nargs, wb_
     return 0;
 }
 
+/* growable argument vector for calls */
+static wb_lv_value *args_push(wb_lv_value *a, int *n, int *cap, wb_lv_value v) {
+    if (*n >= *cap) {
+        *cap = *cap ? *cap * 2 : 8;
+        a = (wb_lv_value *)realloc(a, (size_t)(*cap) * sizeof(*a));
+    }
+    a[(*n)++] = v;
+    return a;
+}
+
 wb_lv_value wb_lv_eval_multi(wb_lv *L, ex *e, env *en, wb_lv_value **out, int *nout) {
     *out = NULL; *nout = 0;
     if (!e) return wb_lv_nil();
 
     if (e->t == N_CALL || e->t == N_METHOD) {
-        wb_lv_value callee, *args;
-        int na;
+        wb_lv_value callee;
+        wb_lv_value *args = NULL; int na = 0, acap = 0;
+
         if (e->t == N_METHOD) {
             wb_lv_value self = eval(L, e->e1->e1, en);
             if (L->has_err) return wb_lv_nil();
             wb_lv_value key = (e->e1->e2 && e->e1->e2->t == N_STR)
                                   ? wb_lv_str(e->e1->e2->str) : wb_lv_nil();
             callee = wb_lv_index(L, self, key);
-            if (L->has_err) return wb_lv_nil();
-            na = e->nlist + 1;
-            args = (wb_lv_value *)malloc((size_t)(na > 0 ? na : 1) * sizeof(*args));
-            if (!args) { wb_lv_error(L, "out of memory"); return wb_lv_nil(); }
-            args[0] = self;
+            if (L->has_err) { free(args); return wb_lv_nil(); }
+            args = args_push(args, &na, &acap, self);      /* implicit self */
             for (int i = 0; i < e->nlist; i++) {
                 if (i == e->nlist - 1) {
                     wb_lv_value *o2 = NULL; int n2 = 0;
                     wb_lv_eval_multi(L, e->list[i], en, &o2, &n2);
-                    args[i + 1] = (n2 > 0) ? o2[0] : wb_lv_nil();
-                } else args[i + 1] = eval(L, e->list[i], en);
+                    if (L->has_err) { free(args); return wb_lv_nil(); }
+                    for (int k = 0; k < n2; k++) args = args_push(args, &na, &acap, o2[k]);
+                    if (n2 == 0) args = args_push(args, &na, &acap, wb_lv_nil());
+                } else {
+                    wb_lv_value v = eval(L, e->list[i], en);
+                    if (L->has_err) { free(args); return wb_lv_nil(); }
+                    args = args_push(args, &na, &acap, v);
+                }
             }
         } else {
             callee = eval(L, e->e1, en);
-            if (L->has_err) return wb_lv_nil();
-            na = e->nlist;
-            args = (wb_lv_value *)malloc((size_t)(na > 0 ? na : 1) * sizeof(*args));
-            if (!args) { wb_lv_error(L, "out of memory"); return wb_lv_nil(); }
-            for (int i = 0; i < na; i++) {
-                if (i == na - 1 && na > 0) {
+            if (L->has_err) { free(args); return wb_lv_nil(); }
+            for (int i = 0; i < e->nlist; i++) {
+                if (i == e->nlist - 1) {
+                    /* the last argument expands to all of its values */
                     wb_lv_value *o2 = NULL; int n2 = 0;
                     wb_lv_eval_multi(L, e->list[i], en, &o2, &n2);
-                    args[i] = (n2 > 0) ? o2[0] : wb_lv_nil();
-                } else args[i] = eval(L, e->list[i], en);
+                    if (L->has_err) { free(args); return wb_lv_nil(); }
+                    for (int k = 0; k < n2; k++) args = args_push(args, &na, &acap, o2[k]);
+                    if (n2 == 0) args = args_push(args, &na, &acap, wb_lv_nil());
+                } else {
+                    wb_lv_value v = eval(L, e->list[i], en);
+                    if (L->has_err) { free(args); return wb_lv_nil(); }
+                    args = args_push(args, &na, &acap, v);
+                }
             }
         }
-        if (L->has_err) { free(args); return wb_lv_nil(); }
         int nr = wb_lv_call_value(L, callee, args, na, out);
         free(args);
         if (L->has_err) return wb_lv_nil();
@@ -489,14 +541,24 @@ wb_lv_value wb_lv_eval_multi(wb_lv *L, ex *e, env *en, wb_lv_value **out, int *n
 
     wb_lv_value v = eval(L, e, en);
     *nout = 1;
-    stk_push(L, v);
-    *out = L->stk + L->sp - 1;
+    /* Arena slot, NOT the value stack: stk_push may realloc L->stk and
+     * invalidate a pointer into it. */
+    wb_lv_value *slot = WB_LV_ALLOC(wb_lv_value, L);
+    if (slot) *slot = v;
+    *out = slot;
     return v;
 }
 
 static wb_lv_value eval_impl(wb_lv *L, ex *e, env *en) {
     if (!e) return wb_lv_nil();
     switch (e->t) {
+    case N_CALL: case N_METHOD: {
+        /* a call used as a VALUE: take its first result. Statement position
+         * goes through exec(), which discards it. */
+        wb_lv_value *out = NULL; int no = 0;
+        wb_lv_eval_multi(L, e, en, &out, &no);
+        return (no > 0) ? out[0] : wb_lv_nil();
+    }
     case N_NIL: return wb_lv_nil();
     case N_TRUE: return wb_lv_bool(1);
     case N_FALSE: return wb_lv_bool(0);
@@ -537,6 +599,13 @@ static wb_lv_value eval_impl(wb_lv *L, ex *e, env *en) {
         case '-':
             if (v.t == WB_LV_INT) return wb_lv_integer((int64_t)(0 - (uint64_t)v.as.i));
             if (v.t == WB_LV_NUM) return wb_lv_number(-v.as.n);
+            {
+                wb_lv_value cv;
+                if (coerce_num(v, &cv)) {
+                    if (cv.t == WB_LV_INT) return wb_lv_integer((int64_t)(0 - (uint64_t)cv.as.i));
+                    return wb_lv_number(-cv.as.n);
+                }
+            }
             /* __unm */
             {
                 wb_lv_table *m = wb_lv_getmetatable(L, v);
@@ -683,23 +752,24 @@ wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
         env *be = new_env(L, en);           /* every block gets its own scope */
         int n = e->nlist;
         for (int i = 0; i < n; i++) {
-            ex *st = e->list[i];
-            if (st && st->t == N_GOTO) {
-                if (block_has_label(e, st->label)) {
-                    /* find the label and resume after it */
-                    int j = i;
-                    for (; j < n; j++) if (e->list[j]->t == N_LABEL && !strcmp(e->list[j]->label, st->label)) break;
-                    if (j < n) { i = j; continue; }
+            int wr = 0;
+            wb_lv_value r = exec(L, e->list[i], be, &wr);
+            if (wr) { *was_return = 1; L->curline = save; return r; }
+            if (L->has_err) { L->curline = save; return wb_lv_nil(); }
+            if (L->has_goto) {
+                /* A goto whose label is in THIS block jumps; anything else
+                 * (a break, or a goto to an outer block) propagates. */
+                if (L->goto_label && block_has_label(e, L->goto_label)) {
+                    int j = i + 1;
+                    for (; j < n; j++)
+                        if (e->list[j] && e->list[j]->t == N_LABEL &&
+                            !strcmp(e->list[j]->label, L->goto_label)) break;
+                    L->has_goto = 0; L->goto_label = NULL;
+                    if (j < n) { i = j; continue; }   /* resume after the label */
                 }
-                L->goto_label = st->label; L->has_goto = 1;
                 L->curline = save;
                 return wb_lv_nil();
             }
-            int wr = 0;
-            wb_lv_value r = exec(L, st, be, &wr);
-            if (wr) { *was_return = 1; L->curline = save; return r; }
-            if (L->has_err) { L->curline = save; return wb_lv_nil(); }
-            if (L->has_goto) { L->curline = save; return wb_lv_nil(); }
         }
         L->curline = save;
         return wb_lv_nil();
@@ -710,23 +780,22 @@ wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
         int nn = e->nlist;
         if (nvals == 0) {
             for (int i = 0; i < nn; i++) env_set(L, en, e->names[i], wb_lv_nil());
-        } else if (nvals == 1 && nn >= 1) {
-            wb_lv_value v;
-            if (vals[0]->t == N_CALL || vals[0]->t == N_METHOD || vals[0]->t == N_VARARG) {
-                wb_lv_value *out = NULL; int no = 0;
-                wb_lv_eval_multi(L, vals[0], en, &out, &no);
-                v = (no > 0) ? out[0] : wb_lv_nil();
-            } else v = eval(L, vals[0], en);
-            env_set(L, en, e->names[0], v);
-            for (int i = 1; i < nn; i++) env_set(L, en, e->names[i], wb_lv_nil());
-        } else {
-            for (int i = 0; i < nvals - 1 && i < nn; i++) env_set(L, en, e->names[i], eval(L, vals[i], en));
-            wb_lv_value *out = NULL; int no = 0;
-            if (nvals > 0) wb_lv_eval_multi(L, vals[nvals - 1], en, &out, &no);
-            int start = nvals - 1;
-            for (int i = 0; i < no && start + i < nn; i++) env_set(L, en, e->names[start + i], out[i]);
-            for (int i = start + no; i < nn; i++) env_set(L, en, e->names[i], wb_lv_nil());
+            L->curline = save;
+            return wb_lv_nil();
         }
+        /* all but the last value expression contribute exactly one value; the
+         * last expands to fill whatever names remain (multiple returns). */
+        wb_lv_value tmp[32]; int nt = 0;
+        for (int i = 0; i < nvals - 1 && nt < 32; i++) {
+            tmp[nt++] = eval(L, vals[i], en);
+            if (L->has_err) { L->curline = save; return wb_lv_nil(); }
+        }
+        wb_lv_value *out = NULL; int no = 0;
+        wb_lv_eval_multi(L, vals[nvals - 1], en, &out, &no);
+        if (L->has_err) { L->curline = save; return wb_lv_nil(); }
+        for (int i = 0; i < no && nt < 32; i++) tmp[nt++] = out[i];
+        for (int i = 0; i < nn; i++)
+            env_set(L, en, e->names[i], (i < nt) ? tmp[i] : wb_lv_nil());
         L->curline = save;
         return wb_lv_nil();
     }
@@ -762,8 +831,20 @@ wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
         return wb_lv_nil();
     }
     case N_FUNCSTAT: {
-        wb_lv_value f = eval(L, e->e1, en);
-        env_assign(L, en, e->name, f);
+        wb_lv_value f = eval(L, e->e2, en);        /* the closure */
+        if (L->has_err) { L->curline = save; return wb_lv_nil(); }
+        if (e->nlist == 0) {
+            env_assign(L, en, e->name, f);
+        } else {
+            /* function t.f() / function t:f() -- set the field on t */
+            wb_lv_value obj = env_get(L, en, e->e1->name);
+            for (int i = 0; i < e->nlist - 1; i++) {
+                obj = wb_lv_index(L, obj, wb_lv_str(e->names[i]));
+                if (L->has_err) break;
+            }
+            if (!L->has_err)
+                wb_lv_setindex(L, obj, wb_lv_str(e->names[e->nlist - 1]), f);
+        }
         L->curline = save;
         return wb_lv_nil();
     }
@@ -795,7 +876,10 @@ wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
             wb_lv_value r = exec(L, e->e2, en, &wr);
             if (wr) { *was_return = 1; L->curline = save; return r; }
             if (L->has_err) break;
-            if (L->has_goto) break;
+            if (L->has_goto) {
+                if (L->goto_label == NULL) L->has_goto = 0;   /* break */
+                break;
+            }
         }
         L->curline = save;
         return wb_lv_nil();
@@ -805,7 +889,11 @@ wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
             int wr = 0;
             wb_lv_value r = exec(L, e->e2, en, &wr);
             if (wr) { *was_return = 1; L->curline = save; return r; }
-            if (L->has_err || L->has_goto) break;
+            if (L->has_err) break;
+            if (L->has_goto) {
+                if (L->goto_label == NULL) L->has_goto = 0;   /* break */
+                break;
+            }
             wb_lv_value c = eval(L, e->e1, en);
             if (L->has_err) break;
             if (wb_lv_truthy(c)) break;
@@ -834,14 +922,18 @@ wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
             int wr = 0;
             wb_lv_value r = exec(L, e->e4, fe, &wr);
             if (wr) { *was_return = 1; L->curline = save; return r; }
-            if (L->has_err || L->has_goto) break;
+            if (L->has_err) break;
+            if (L->has_goto) {
+                if (L->goto_label == NULL) L->has_goto = 0;   /* break */
+                break;
+            }
         }
         L->curline = save;
         return wb_lv_nil();
     }
     case N_FORIN: {
         /* evaluate the iterator triple */
-        int nv = e->nlist;
+        int nv = (int)(intptr_t)e->e4;
         wb_lv_value f, s, ctrl;
         wb_lv_value *out = NULL; int no = 0;
         wb_lv_eval_multi(L, e->list[nv - 1], en, &out, &no);
@@ -860,9 +952,13 @@ wb_lv_value wb_lv_exec(wb_lv *L, ex *e, env *en, int *was_return) {
                 env_set(L, fe, e->names[i], res[i]);
             }
             int wr = 0;
-            wb_lv_value r = exec(L, e->e4, fe, &wr);
+            wb_lv_value r = exec(L, e->e1, fe, &wr);
             if (wr) { *was_return = 1; L->curline = save; return r; }
-            if (L->has_err || L->has_goto) break;
+            if (L->has_err) break;
+            if (L->has_goto) {
+                if (L->goto_label == NULL) L->has_goto = 0;   /* break */
+                break;
+            }
         }
         L->curline = save;
         return wb_lv_nil();

@@ -237,15 +237,17 @@ static int push_captures(wb_lv *L, matchstate *ms, const char *s, const char *e,
     int nlevels = (ms->level == 0 && s) ? 1 : ms->level;
     if (nlevels > MAXCAPTURES) nlevels = MAXCAPTURES;
     for (int i = 0; i < nlevels; i++) {
-        if (i >= ms->level) {
-            out[i].t = WB_LV_INT;
-            out[i].as.i = (int64_t)(ms->capture[i].init - ms->src_init) + 1;
-        } else if (ms->capture[i].len == CAP_POSITION) {
-            out[i].t = WB_LV_INT;
-            out[i].as.i = (int64_t)(ms->capture[i].init - ms->src_init) + 1;
+        if (i < ms->level) {
+            if (ms->capture[i].len == CAP_POSITION) {
+                out[i].t = WB_LV_INT;
+                out[i].as.i = (int64_t)(ms->capture[i].init - ms->src_init) + 1;
+            } else {
+                size_t len = (size_t)ms->capture[i].len;
+                out[i] = wb_lv_str(wb_lv_intern(L, ms->capture[i].init, len));
+            }
         } else {
-            size_t len = (size_t)ms->capture[i].len;
-            out[i] = wb_lv_str(wb_lv_intern(L, ms->capture[i].init, len));
+            /* no captures: the whole match */
+            out[i] = wb_lv_str(wb_lv_intern(L, s, (size_t)(e - s)));
         }
     }
     return nlevels;
@@ -397,6 +399,7 @@ static wb_lv_value s_format(wb_lv *L, wb_lv_value *a, int n) {
             while (i < fl && sp < 60 && isdigit((unsigned char)fmt[i])) spec[sp++] = fmt[i++];
         }
         char conv = (i < fl) ? fmt[i] : 0;
+        if (sp < 62) spec[sp++] = conv;   /* the conversion char IS part of the spec */
         spec[sp] = 0;
         char tmp[512];
         switch (conv) {
@@ -519,10 +522,6 @@ static wb_lv_value s_match(wb_lv *L, wb_lv_value *a, int n) {
         if (e) {
             wb_lv_value out[MAXCAPTURES];
             int nc = push_captures(L, &ms, s, e, out);
-            if (nc == 0) {
-                out[0] = wb_lv_str(wb_lv_intern(L, s, (size_t)(e - s)));
-                nc = 1;
-            }
             return wb_lv_multi_value(L, out, nc);
         }
         s++;
@@ -548,10 +547,6 @@ static wb_lv_value iter_gmatch(wb_lv *L, wb_lv_value *a, int n, void *ud) {
             st->pos = (e == s) ? (size_t)(e - st->src) + 1 : (size_t)(e - st->src);
             wb_lv_value out[MAXCAPTURES];
             int nc = push_captures(L, &ms, s, e, out);
-            if (nc == 0) {
-                out[0] = wb_lv_str(wb_lv_intern(L, s, (size_t)(e - s)));
-                nc = 1;
-            }
             return wb_lv_multi_value(L, out, nc);
         }
         s++;
@@ -647,10 +642,16 @@ static wb_lv_value s_gsub(wb_lv *L, wb_lv_value *a, int n) {
                     memcpy(buf + len, rs, l); len += l;
                 }
             }
-            if (e) s = e;
-            if (e == s && *s) {
-                if (len + 2 > cap) { cap = cap*2+32; buf = (char*)realloc(buf, cap); }
-                buf[len++] = *s++;
+            if (e == s) {
+                /* empty match: copy one character and move past it, or the
+                 * loop would never advance */
+                if (s < src + ls) {
+                    if (len + 2 > cap) { cap = cap*2+32; buf = (char*)realloc(buf, cap); }
+                    buf[len++] = *s;
+                }
+                s++;
+            } else {
+                s = e;
             }
         } else {
             if (s < src + ls) {

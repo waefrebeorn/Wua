@@ -128,12 +128,14 @@ static ex *parse_table(parser *P) {
     ex **vals = NULL, **keys = NULL; int nv = 0, cap = 0;
     while (!tok_is(P, '}')) {
         if (tok_is(P, T_EOF)) { wb_lv_perr(P, "'}' expected"); break; }
-        ex *key = NULL;
+        ex *key = NULL, *val;
         if (tok_is(P, '[')) {
             wb_lv_next_tok(P);
             key = parse_expr(P);
             if (P->err) break;
             expect(P, ']', "']' expected");
+            expect(P, '=', "'=' expected");
+            val = parse_expr(P);
         } else if (tok_is(P, T_NAME)) {
             /* lookahead for `name = value` */
             size_t save_p = P->p; tok save_cur = P->cur; int save_line = P->line;
@@ -143,27 +145,22 @@ static ex *parse_table(parser *P) {
                 wb_lv_next_tok(P);
                 key = espawn(P->pl);
                 if (key) { key->t = N_STR; key->str = nm; }
-                ex *val = parse_expr(P);
-                if (P->err) break;
-                if (nv >= cap) { cap = cap ? cap * 2 : 8; vals = (ex **)realloc(vals, (size_t)cap*sizeof(*vals)); keys = (ex **)realloc(keys, (size_t)cap*sizeof(*keys)); }
-                vals[nv] = val; keys[nv] = key; nv++;
+                val = parse_expr(P);
             } else {
                 /* not a keyed field: rewind and parse as a positional expr */
                 P->p = save_p; P->cur = save_cur; P->line = save_line;
-                ex *val = parse_expr(P);
-                if (P->err) break;
-                if (nv >= cap) { cap = cap ? cap * 2 : 8; vals = (ex **)realloc(vals, (size_t)cap*sizeof(*vals)); keys = (ex **)realloc(keys, (size_t)cap*sizeof(*keys)); }
-                vals[nv] = val; keys[nv] = NULL; nv++;
+                val = parse_expr(P);
             }
-            if (tok_is(P, ',') || tok_is(P, ';')) wb_lv_next_tok(P);
-            continue;
         } else {
-            ex *val = parse_expr(P);
-            if (P->err) break;
-            if (nv >= cap) { cap = cap ? cap * 2 : 8; vals = (ex **)realloc(vals, (size_t)cap*sizeof(*vals)); keys = (ex **)realloc(keys, (size_t)cap*sizeof(*keys)); }
-            vals[nv] = val; keys[nv] = key; nv++;
+            val = parse_expr(P);
         }
         if (P->err) break;
+        if (nv >= cap) {
+            cap = cap ? cap * 2 : 8;
+            vals = (ex **)realloc(vals, (size_t)cap * sizeof(*vals));
+            keys = (ex **)realloc(keys, (size_t)cap * sizeof(*keys));
+        }
+        vals[nv] = val; keys[nv] = key; nv++;
         if (tok_is(P, ',') || tok_is(P, ';')) wb_lv_next_tok(P);
     }
     if (!P->err) expect(P, '}', "'}' expected");
@@ -292,8 +289,11 @@ static ex *parse_prefix(parser *P) {
             /* arguments */
             if (tok_is(P, '(')) {
                 wb_lv_next_tok(P);
-                int n = 0; call->list = parse_explist(P, &n); call->nlist = n;
-                if (!P->err) expect(P, ')', "')' expected");
+                if (tok_is(P, ')')) { call->nlist = 0; call->list = NULL; wb_lv_next_tok(P); }
+                else {
+                    int n = 0; call->list = parse_explist(P, &n); call->nlist = n;
+                    if (!P->err) expect(P, ')', "')' expected");
+                }
             } else if (tok_is(P, '{')) {
                 call->list = (ex **)wb_lv_arena_alloc(P->L, sizeof(ex *));
                 call->list[0] = parse_table(P); call->nlist = 1;
@@ -446,14 +446,14 @@ static ex *parse_stmt(parser *P) {
             names[nn++] = P->cur.str;
             wb_lv_next_tok(P);
         }
-        s->names = names; s->nlist = nn;
+        s->names = names; s->nlist = nn;      /* loop-variable count */
         expect(P, T_IN, "'in' expected");
         int n = 0;
         s->list = parse_explist(P, &n);
-        s->nlist = n;
+        s->e4 = (ex *)(intptr_t)n;           /* expression-list count */
         if (P->err) return s;
         expect(P, T_DO, "'do' expected");
-        int m = 0; s->e4 = parse_block(P, &m);
+        int m = 0; s->e1 = parse_block(P, &m);   /* the loop body */
         if (!(m & U_END)) wb_lv_perr(P, "'end' expected");
         return s;
     }
@@ -461,23 +461,41 @@ static ex *parse_stmt(parser *P) {
     case T_FUNCTION: {
         wb_lv_next_tok(P);
         if (!tok_is(P, T_NAME)) { wb_lv_perr(P, "function name expected"); return s; }
-        const char *fname = P->cur.str;
+        const char *base = P->cur.str;
         wb_lv_next_tok(P);
+        ex *base_node = espawn(P->pl);
+        if (base_node) { base_node->t = N_NAME; base_node->name = base; base_node->line = line; }
+        const char **fields = NULL; int nf = 0, cap = 0;
         int is_method = 0;
         while (tok_is(P, '.')) {
             wb_lv_next_tok(P);
             if (!tok_is(P, T_NAME)) { wb_lv_perr(P, "field name expected"); return s; }
+            if (nf >= cap) {
+                const char **nf2 = (const char **)wb_lv_arena_alloc(P->L, (size_t)(cap ? cap * 2 : 4) * sizeof(char *));
+                memcpy(nf2, fields, (size_t)nf * sizeof(char *));
+                fields = nf2; cap = cap ? cap * 2 : 4;
+            }
+            fields[nf++] = P->cur.str;
             wb_lv_next_tok(P);
         }
         if (tok_is(P, ':')) {
             wb_lv_next_tok(P);
             if (!tok_is(P, T_NAME)) { wb_lv_perr(P, "method name expected"); return s; }
+            if (nf >= cap) {
+                const char **nf2 = (const char **)wb_lv_arena_alloc(P->L, (size_t)(cap ? cap * 2 : 4) * sizeof(char *));
+                memcpy(nf2, fields, (size_t)nf * sizeof(char *));
+                fields = nf2; cap = cap ? cap * 2 : 4;
+            }
+            fields[nf++] = P->cur.str;
             is_method = 1;
             wb_lv_next_tok(P);
         }
-        s->t = N_FUNCSTAT; s->name = fname;
-        ex *body = parse_funcbody(P, fname, is_method);
-        s->e1 = body;
+        s->t = N_FUNCSTAT;
+        s->e1 = base_node;
+        s->names = fields; s->nlist = nf;
+        s->name = (nf > 0) ? fields[nf - 1] : base;
+        s->op = is_method;
+        s->e2 = parse_funcbody(P, s->name, is_method);
         return s;
     }
 
@@ -488,6 +506,7 @@ static ex *parse_stmt(parser *P) {
             if (!tok_is(P, T_NAME)) { wb_lv_perr(P, "function name expected"); return s; }
             s->t = N_LOCALFUNC;
             s->name = P->cur.str;
+            wb_lv_next_tok(P);               /* consume the name */
             ex *body = parse_funcbody(P, s->name, 0);
             s->e1 = body;
             return s;

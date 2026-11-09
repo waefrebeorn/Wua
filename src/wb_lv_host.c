@@ -30,7 +30,7 @@ wb_lv *wb_lv_alloc(void) {
 
 wb_lv *wb_lv_new(void) {
     wb_lv *L = wb_lv_alloc();
-    if (L) wb_lv_register_builtins(L);
+    if (L) wb_lv_openlibs(L);
     return L;
 }
 
@@ -183,7 +183,7 @@ static wb_lv_value cfn_assert(wb_lv *L, wb_lv_value *args, int n, void *ud) {
         wb_lv_error(L, "%s", wb_lv_tostring_intern(L, m));
         return wb_lv_nil();
     }
-    return args[0];
+    return wb_lv_multi_value(L, args, n);
 }
 
 static wb_lv_value cfn_error(wb_lv *L, wb_lv_value *args, int n, void *ud) {

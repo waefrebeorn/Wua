@@ -292,11 +292,6 @@ void wb_lv_next_tok(parser *P) {
     for (;;) {
         while (P->p < n && (s[P->p] == ' ' || s[P->p] == '\t' || s[P->p] == '\r' || s[P->p] == '\v' || s[P->p] == '\f')) P->p++;
         if (P->p < n && s[P->p] == '\n') { P->line++; P->p++; continue; }
-        /* shebang: skip the first line if it starts with '#' */
-        if (P->p == 0 && P->line == 1 && s[P->p] == '#') {
-            while (P->p < n && s[P->p] != '\n') P->p++;
-            continue;
-        }
         if (P->p + 1 < n && s[P->p] == '-' && s[P->p+1] == '-') {
             P->p += 2;
             long lvl = -1;

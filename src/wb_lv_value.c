@@ -80,7 +80,11 @@ const char *wb_lv_tostring_intern(wb_lv *L, wb_lv_value v) {
     case WB_LV_NIL:   return wb_lv_intern(L, "nil", 3);
     case WB_LV_BOOL:  return wb_lv_intern(L, v.as.b ? "true" : "false", v.as.b ? 4 : 5);
     case WB_LV_INT:   snprintf(buf, sizeof buf, "%lld", (long long)v.as.i); return wb_lv_intern(L, buf, strlen(buf));
-    case WB_LV_NUM:   snprintf(buf, sizeof buf, "%.14g", v.as.n); return wb_lv_intern(L, buf, strlen(buf));
+    case WB_LV_NUM:
+        snprintf(buf, sizeof buf, "%.14g", v.as.n);
+        /* Lua renders integral floats with a trailing ".0" */
+        if (!strpbrk(buf, ".eEnN")) strncat(buf, ".0", sizeof buf - strlen(buf) - 1);
+        return wb_lv_intern(L, buf, strlen(buf));
     case WB_LV_STR:   return v.as.s;
     case WB_LV_TABLE: snprintf(buf, sizeof buf, "table: %p", (void *)v.as.tab); return wb_lv_intern(L, buf, strlen(buf));
     case WB_LV_FUNCTION: snprintf(buf, sizeof buf, "function: %p", (void *)v.as.fn); return wb_lv_intern(L, buf, strlen(buf));
@@ -96,7 +100,11 @@ const char *wb_lv_tostring(wb_lv_value v) {
     static char fb[64];
     if (v.t == WB_LV_STR) return v.as.s;
     if (v.t == WB_LV_INT) { snprintf(fb, sizeof fb, "%lld", (long long)v.as.i); return fb; }
-    if (v.t == WB_LV_NUM) { snprintf(fb, sizeof fb, "%.14g", v.as.n); return fb; }
+    if (v.t == WB_LV_NUM) {
+        snprintf(fb, sizeof fb, "%.14g", v.as.n);
+        if (!strpbrk(fb, ".eEnN")) strncat(fb, ".0", sizeof fb - strlen(fb) - 1);
+        return fb;
+    }
     switch (v.t) {
     case WB_LV_NIL:   return "nil";
     case WB_LV_BOOL:  return v.as.b ? "true" : "false";

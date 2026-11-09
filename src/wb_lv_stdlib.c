@@ -448,33 +448,170 @@ void wb_lv_register_os(wb_lv *L) {
 }
 
 /* ------------------------------------------------------------------ io */
+/*
+ * A file handle is a table { f = <int64 pointer>, closed = bool }. The methods
+ * live on a shared metatable keyed by "f", so there is no userdata type.
+ */
+
+static FILE *get_file(wb_lv *L, wb_lv_value v, int argn) {
+    if (v.t != WB_LV_TABLE) {
+        wb_lv_error(L, "bad argument #%d to 'read' (file expected)", argn);
+        return NULL;
+    }
+    wb_lv_value f = wb_lv_table_get(L, v.as.tab, wb_lv_str("f"));
+    if (f.t != WB_LV_INT) {
+        wb_lv_error(L, "bad argument #%d (file expected)", argn);
+        return NULL;
+    }
+    return (FILE *)(intptr_t)f.as.i;
+}
+
+static wb_lv_value i_open(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    if (n < 1 || a[0].t != WB_LV_STR) {
+        wb_lv_error(L, "bad argument #1 to 'open' (string expected)");
+        return wb_lv_nil();
+    }
+    const char *mode = (n >= 2 && a[1].t == WB_LV_STR) ? a[1].as.s : "r";
+    FILE *f = fopen(a[0].as.s, mode);
+    if (!f) {
+        wb_lv_value out[2];
+        out[0] = wb_lv_nil();
+        out[1] = wb_lv_str(wb_lv_intern(L, "cannot open file", 17));
+        return wb_lv_multi_value(L, out, 2);
+    }
+    wb_lv_table *t = wb_lv_table_new(L, 0, 4);
+    wb_lv_table_set(L, t, wb_lv_str("f"), wb_lv_integer((int64_t)(intptr_t)f));
+    wb_lv_table_set(L, t, wb_lv_str("closed"), wb_lv_bool(0));
+    wb_lv_value r; r.t = WB_LV_TABLE; r.as.tab = t;
+    return r;
+}
+
+static wb_lv_value f_close(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    FILE *f = get_file(L, (n >= 1) ? a[0] : wb_lv_nil(), 1);
+    if (!f) return wb_lv_nil();
+    fclose(f);
+    if (n >= 1 && a[0].t == WB_LV_TABLE)
+        wb_lv_table_set(L, a[0].as.tab, wb_lv_str("closed"), wb_lv_bool(1));
+    return wb_lv_bool(1);
+}
+
+static wb_lv_value f_write(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    FILE *f = get_file(L, (n >= 1) ? a[0] : wb_lv_nil(), 1);
+    if (!f) return wb_lv_nil();
+    for (int i = 1; i < n; i++) {
+        wb_lv_value v = a[i];
+        if (v.t == WB_LV_STR) fputs(v.as.s, f);
+        else if (v.t == WB_LV_INT || v.t == WB_LV_NUM) fputs(wb_lv_tostring_intern(L, v), f);
+    }
+    return a[0];
+}
+
+static wb_lv_value f_read(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    FILE *f = get_file(L, (n >= 1) ? a[0] : wb_lv_nil(), 1);
+    if (!f) return wb_lv_nil();
+    const char *fmt = (n >= 2 && a[1].t == WB_LV_STR) ? a[1].as.s : "l";
+    if (fmt[0] == 'n') {   /* read a number */
+        double d;
+        if (fscanf(f, "%lf", &d) == 1) return wb_lv_number(d);
+        return wb_lv_nil();
+    }
+    if (fmt[0] == 'a') {   /* read the whole file */
+        char *buf = NULL; size_t len = 0, cap = 0; int c;
+        while ((c = fgetc(f)) != EOF) {
+            if (len + 1 >= cap) { cap = cap ? cap * 2 : 256; buf = (char *)realloc(buf, cap); }
+            buf[len++] = (char)c;
+        }
+        wb_lv_value r = wb_lv_str(wb_lv_intern(L, buf ? buf : "", len));
+        free(buf);
+        return r;
+    }
+    /* "l" (default) or "L": one line */
+    char buf[4096];
+    if (!fgets(buf, sizeof buf, f)) return wb_lv_nil();
+    size_t l = strlen(buf);
+    if (l && buf[l-1] == '\n') buf[--l] = 0;
+    return wb_lv_str(wb_lv_intern(L, buf, l));
+}
+
+static wb_lv_value f_seek(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    FILE *f = get_file(L, (n >= 1) ? a[0] : wb_lv_nil(), 1);
+    if (!f) return wb_lv_nil();
+    const char *whence = (n >= 3 && a[2].t == WB_LV_STR) ? a[2].as.s : "cur";
+    int w = SEEK_SET;
+    if (whence[0] == 'c') w = SEEK_CUR;
+    else if (whence[0] == 'e') w = SEEK_END;
+    long off = (n >= 2) ? (long)wb_lv_tointeger(a[1], NULL) : 0;
+    if (fseek(f, off, w) != 0) return wb_lv_nil();
+    return wb_lv_integer((int64_t)ftell(f));
+}
+
+typedef struct { FILE *f; } line_state;
+
+static wb_lv_value iter_lines(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)a; (void)n;
+    line_state *st = (line_state *)ud;
+    if (!st || !st->f) return wb_lv_nil();
+    char buf[4096];
+    if (!fgets(buf, sizeof buf, st->f)) { fclose(st->f); st->f = NULL; return wb_lv_nil(); }
+    size_t l = strlen(buf);
+    if (l && buf[l-1] == '\n') buf[--l] = 0;
+    return wb_lv_str(wb_lv_intern(L, buf, l));
+}
+
+static wb_lv_value i_lines(wb_lv *L, wb_lv_value *a, int n, void *ud) {
+    (void)ud;
+    FILE *f = stdin;
+    line_state *st = NULL;
+    if (n >= 1 && a[0].t == WB_LV_STR) {
+        f = fopen(a[0].as.s, "r");
+        if (!f) { wb_lv_error(L, "cannot open file"); return wb_lv_nil(); }
+    }
+    st = (line_state *)calloc(1, sizeof *st);
+    st->f = f;
+    wb_lv_value it; it.t = WB_LV_CFUNCTION; it.as.cf.f = iter_lines; it.as.cf.ud = st;
+    return it;
+}
 
 static wb_lv_value i_write(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     (void)ud;
     for (int i = 0; i < n; i++) {
         wb_lv_value v = a[i];
         if (v.t == WB_LV_STR) fputs(v.as.s, stdout);
-        else fputs(wb_lv_tostring_intern(L, v), stdout);
+        else if (v.t == WB_LV_INT || v.t == WB_LV_NUM) fputs(wb_lv_tostring_intern(L, v), stdout);
     }
     return wb_lv_nil();
 }
+
 static wb_lv_value i_read(wb_lv *L, wb_lv_value *a, int n, void *ud) {
     (void)ud;
-    const char *fmt = (n >= 1 && a[0].t == WB_LV_STR) ? a[0].as.s : "l";
     char buf[4096];
     if (!fgets(buf, sizeof buf, stdin)) return wb_lv_nil();
     size_t l = strlen(buf);
     if (l && buf[l-1] == '\n') buf[--l] = 0;
-    (void)fmt;
     return wb_lv_str(wb_lv_intern(L, buf, l));
 }
 
 void wb_lv_register_io(wb_lv *L) {
-    wb_lv_table *t = wb_lv_table_new(L, 0, 4);
+    wb_lv_table *t = wb_lv_table_new(L, 0, 8);
 #define I(name, fn) { wb_lv_value v; v.t = WB_LV_CFUNCTION; v.as.cf.f = fn; v.as.cf.ud = NULL; \
     wb_lv_table_set(L, t, wb_lv_str(name), v); }
-    I("write", i_write); I("read", i_read);
+    I("write", i_write); I("read", i_read); I("open", i_open); I("lines", i_lines);
 #undef I
     wb_lv_value tv; tv.t = WB_LV_TABLE; tv.as.tab = t;
     wb_lv_set_global(L, "io", tv);
+
+    /* the file metatable: file:read / write / close / seek / lines */
+    wb_lv_table *fm = wb_lv_table_new(L, 0, 6);
+#define M(name, fn) { wb_lv_value v; v.t = WB_LV_CFUNCTION; v.as.cf.f = fn; v.as.cf.ud = NULL; \
+    wb_lv_table_set(L, fm, wb_lv_str(name), v); }
+    M("read", f_read); M("write", f_write); M("close", f_close); M("seek", f_seek);
+    M("lines", i_lines);
+#undef M
+    wb_lv_value idx; idx.t = WB_LV_TABLE; idx.as.tab = fm;
+    wb_lv_table_set(L, fm, wb_lv_str("__index"), idx);
 }

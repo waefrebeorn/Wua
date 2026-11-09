@@ -124,7 +124,7 @@ int main(void) {
     wb_lv_register_global(L, "boost", cfn_boost, NULL);
     const char *p7 = wb_lv_run(L, "echo(boost(7))\n", "t7");
     CHECK(p7 == NULL, "p7 ran without error");
-    check_rec(&r, "70");
+    check_rec(&r, "70.0");   /* boost returns a float; Lua renders 70.0 */
     r.n = 0; r.buf[0] = 0;
 
     /* 8: a function stored as a table field (mod-style API) is callable */
