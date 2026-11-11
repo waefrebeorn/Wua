@@ -18,6 +18,11 @@ lets other games be slermed into the space. It lives inside
 - One non-intrusive arena, one string interner, one open-addressed table.
 - Opaque handles: `wb_lv`, `wb_lv_value`, `wb_lv_func`, `wb_lv_table`.
 
+
+> **~WuBu~ AGI** — one system, many repositories. This is the **script substrate**. The Body is [WuBuOS](https://github.com/waefrebeorn/WuBuOS), the Brain wubuwizard, the Compiler WuBuNOS.
+
+
+> **~WuBu~ AGI** — one system, many repositories. This is the **script substrate**. The Body is [WuBuOS](https://github.com/waefrebeorn/WuBuOS), the Brain wubuwizard, the Compiler WuBuNOS.
 ## What is implemented
 
 **Language.** Integers and floats with the Lua 5.3+ numeric model (integer
